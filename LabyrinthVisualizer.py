@@ -1,5 +1,8 @@
+import json
+import os
 import tkinter as tk
-from tkinter import ttk, simpledialog
+from tkinter import ttk, messagebox
+from collections import defaultdict
 
 class StartupDialog:
     def __init__(self, root):
@@ -94,15 +97,16 @@ class LabyrinthGridVisualizer:
         self.root = root
         self.root.title("Labyrinth Grid Visualizer")
         
-        # Grid parameters - 282cm square with 30cm cells (9 cells)
+        # Grid parameters
         self.cell_size = 60  # pixels per cell (30cm)
-        self.grid_cells = 9  # 282cm / 30cm ≈ 9.4 → 9 cells
+        self.grid_cells = 9   # 282cm / 30cm ≈ 9.4 → 9 cells
         self.robot_x = start_x
         self.robot_y = start_y
-        self.robot_direction = start_direction  # initial direction
+        self.robot_direction = start_direction  # 0=left, 1=right, 2=forward, 3=backward
         
-        # Grid data: 0=unvisited, 1=visited, 2=available, 3=current
+        # Grid states: 0=unvisited, 1=visited, 2=available, 3=current
         self.grid = [[0 for _ in range(self.grid_cells)] for _ in range(self.grid_cells)]
+        self.available_cells = defaultdict(int)  # Tracks available moves
         
         # Create main container
         self.main_frame = ttk.Frame(root)
@@ -114,54 +118,86 @@ class LabyrinthGridVisualizer:
                                height=self.cell_size*self.grid_cells)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # Right side - Control Panel (same as before)
-        self.create_control_panel()
-        
-        # Draw the initial grid
-        self.draw_grid()
-    
-    def create_control_panel(self):
-        """Create the right-side control panel"""
+        # Right side - Control Panel
         self.right_frame = ttk.Frame(self.main_frame, width=250)
         self.right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
         
-        # Control Mode Section
+        # Create all UI elements first
+        self.create_control_panel()
+        
+        # Initialize first position and available moves
+        self.mark_position(self.robot_x, self.robot_y, 3)  # Current position
+        self.update_available_cells({"right":1, "left":1, "forward":1})  # Initial available moves
+        
+        # Key bindings
+        self.root.bind('f', lambda e: self.manual_move("forward"))
+        self.root.bind('l', lambda e: self.manual_move("left"))
+        self.root.bind('r', lambda e: self.manual_move("right"))
+        self.root.bind('b', lambda e: self.manual_move("backward"))
+        
+        # File monitoring
+        self.file_path = 'outputFile.txt'
+        self.last_mod_time = 0
+        self.set_mode()
+        self.draw_grid()
+        self.watch_file()
+
+
+    def get_direction_string(self):
+        """Get string representation of current direction"""
+        directions = {0: "Left", 1: "Right", 2: "Forward", 3: "Backward"}
+        return directions.get(self.robot_direction, "Unknown")
+
+    def create_control_panel(self):
+        """Create all control panel elements"""
+        # Mode selection
         ttk.Label(self.right_frame, text="Control Mode", font=('Arial', 12, 'bold')).pack(pady=10, anchor='w')
         self.mode_var = tk.StringVar(value="Auto Mode")
         ttk.Radiobutton(self.right_frame, text="Auto Mode", variable=self.mode_var, 
-                        value="Auto Mode").pack(anchor='w', padx=5)
+                       value="Auto Mode", command=self.set_mode).pack(anchor='w', padx=5)
         ttk.Radiobutton(self.right_frame, text="Manual Mode", variable=self.mode_var, 
-                        value="Manual Mode").pack(anchor='w', padx=5)
+                       value="Manual Mode", command=self.set_mode).pack(anchor='w', padx=5)
         
-        # Manual Controls Section
-        ttk.LabelFrame(self.right_frame, text="Manual Controls").pack(fill=tk.X, padx=5, pady=10)
-        controls_frame = ttk.Frame(self.right_frame)
-        controls_frame.pack(fill=tk.X, padx=5, pady=5)
+        # Manual controls
+        self.manual_frame = ttk.LabelFrame(self.right_frame, text="Manual Controls")
+        self.manual_frame.pack(fill=tk.X, padx=5, pady=10)
         
-        ttk.Button(controls_frame, text="Forward (F)").pack(side=tk.TOP, pady=2, fill=tk.X)
-        ttk.Button(controls_frame, text="Left (L)").pack(side=tk.LEFT, pady=2, expand=True)
-        ttk.Button(controls_frame, text="Right (R)").pack(side=tk.RIGHT, pady=2, expand=True)
-        ttk.Button(controls_frame, text="Backward (B)").pack(side=tk.BOTTOM, pady=2, fill=tk.X)
+        self.btn_forward = ttk.Button(self.manual_frame, text="Forward (F)", 
+                                    command=lambda: self.manual_move("forward"))
+        self.btn_forward.pack(pady=2, fill=tk.X)
         
-        # Position Information Section
-        info_frame = ttk.LabelFrame(self.right_frame, text="Position Information")
-        info_frame.pack(fill=tk.X, padx=5, pady=10)
+        self.btn_left = ttk.Button(self.manual_frame, text="Left (L)", 
+                                 command=lambda: self.manual_move("left"))
+        self.btn_left.pack(side=tk.LEFT, pady=2, expand=True)
         
-        self.position_label = ttk.Label(info_frame, text=f"Position: ({self.robot_x}, {self.robot_y})")
+        self.btn_right = ttk.Button(self.manual_frame, text="Right (R)", 
+                                  command=lambda: self.manual_move("right"))
+        self.btn_right.pack(side=tk.RIGHT, pady=2, expand=True)
+        
+        self.btn_backward = ttk.Button(self.manual_frame, text="Backward (B)", 
+                                     command=lambda: self.manual_move("backward"))
+        self.btn_backward.pack(pady=2, fill=tk.X)
+        
+        # Position info
+        self.info_frame = ttk.LabelFrame(self.right_frame, text="Position Information")
+        self.info_frame.pack(fill=tk.X, padx=5, pady=10)
+        
+        self.position_label = ttk.Label(self.info_frame, text=f"Position: ({self.robot_x}, {self.robot_y})")
         self.position_label.pack(anchor='w', padx=5, pady=2)
         
-        self.direction_label = ttk.Label(info_frame, text=f"Direction: {self.robot_direction}")
+        self.direction_label = ttk.Label(self.info_frame, text=f"Direction: {self.get_direction_string()}")
         self.direction_label.pack(anchor='w', padx=5, pady=2)
         
-        self.available_label = ttk.Label(info_frame, text="Available: right:1, left:1, forward:1")
+        self.available_label = ttk.Label(self.info_frame, text="Available: right:1, left:1, forward:1")
         self.available_label.pack(anchor='w', padx=5, pady=2)
         
-        # Legend Section
+        # Legend
         ttk.Label(self.right_frame, text="Legend", font=('Arial', 10, 'bold')).pack(pady=(20,5), anchor='w')
         self.create_legend_item("white", "Unvisited")
         self.create_legend_item("red", "Visited")
         self.create_legend_item("green", "Available")
         self.create_legend_item("blue", "Current Position")
+
     
     def create_legend_item(self, color, text):
         """Helper to create legend items"""
@@ -170,11 +206,167 @@ class LabyrinthGridVisualizer:
         tk.Canvas(frame, width=20, height=20, bg=color, bd=1, relief="solid").pack(side=tk.LEFT, padx=5)
         ttk.Label(frame, text=text).pack(side=tk.LEFT, anchor='w')
     
+    def set_mode(self):
+        """Enable/disable manual controls based on mode"""
+        if self.mode_var.get() == "Manual Mode":
+            for btn in [self.btn_forward, self.btn_left, self.btn_right, self.btn_backward]:
+                btn.configure(state=tk.NORMAL)
+        else:
+            for btn in [self.btn_forward, self.btn_left, self.btn_right, self.btn_backward]:
+                btn.configure(state=tk.DISABLED)
+    
+    def manual_move(self, direction):
+        """Handle manual movement commands"""
+        if self.mode_var.get() != "Manual Mode":
+            return
+        
+        # Check if move is available (only for forward movement)
+        if direction == "forward" and not self.available_cells.get("forward", 0):
+            messagebox.showwarning("Invalid Move", "Cannot move forward - path not available")
+            return
+        elif direction in ["left", "right"] and not self.available_cells.get(direction, 0):
+            messagebox.showwarning("Invalid Move", f"Cannot turn {direction} - path not available")
+            return
+        
+        # Mark current position as visited before moving
+        self.mark_position(self.robot_x, self.robot_y, 1)
+        
+        # Update position and direction based on movement
+        if direction == "forward":
+            if self.robot_direction == 0:    # Facing left
+                self.robot_x -= 1
+            elif self.robot_direction == 1:  # Facing right
+                self.robot_x += 1
+            elif self.robot_direction == 2:  # Facing up
+                self.robot_y -= 1
+            elif self.robot_direction == 3:  # Facing down
+                self.robot_y += 1
+        elif direction == "left":
+            # Change direction and move one cell left relative to current facing
+            if self.robot_direction == 0:    # Was facing left, now facing down
+                self.robot_direction = 3
+                self.robot_y += 1
+            elif self.robot_direction == 1:  # Was facing right, now facing up
+                self.robot_direction = 2
+                self.robot_y -= 1
+            elif self.robot_direction == 2:  # Was facing up, now facing left
+                self.robot_direction = 0
+                self.robot_x -= 1
+            elif self.robot_direction == 3:  # Was facing down, now facing right
+                self.robot_direction = 1
+                self.robot_x += 1
+        elif direction == "right":
+            # Change direction and move one cell right relative to current facing
+            if self.robot_direction == 0:    # Was facing left, now facing up
+                self.robot_direction = 2
+                self.robot_y -= 1
+            elif self.robot_direction == 1:  # Was facing right, now facing down
+                self.robot_direction = 3
+                self.robot_y += 1
+            elif self.robot_direction == 2:  # Was facing up, now facing right
+                self.robot_direction = 1
+                self.robot_x += 1
+            elif self.robot_direction == 3:  # Was facing down, now facing left
+                self.robot_direction = 0
+                self.robot_x -= 1
+        elif direction == "backward":
+            # Change direction without moving (face backward)
+            self.robot_direction = (self.robot_direction + 2) % 4  # Reverse direction
+        
+        # Ensure new position is within bounds
+        self.robot_x = max(0, min(self.grid_cells-1, self.robot_x))
+        self.robot_y = max(0, min(self.grid_cells-1, self.robot_y))
+        
+        # Mark new position as current
+        self.mark_position(self.robot_x, self.robot_y, 3)
+        
+        # Update available cells based on possible ways
+        possible_ways = {
+            "right": self.available_cells.get("right", 0),
+            "left": self.available_cells.get("left", 0),
+            "forward": self.available_cells.get("forward", 0)
+        }
+        self.update_available_cells(possible_ways)
+        
+        # Update UI
+        self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
+        self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+        self.draw_grid()
+    
+    def update_available_cells(self, possible_ways):
+        """Update available cells based on possible ways"""
+        self.available_cells = possible_ways.copy()
+        
+        # Clear previous available cells
+        for x in range(self.grid_cells):
+            for y in range(self.grid_cells):
+                if self.grid[x][y] == 2:  # Available
+                    self.grid[x][y] = 0   # Reset to unvisited
+        
+        # Mark new available cells
+        if possible_ways.get("forward", 0):
+            x, y = self.get_forward_position()
+            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
+                self.mark_position(x, y, 2)
+        
+        if possible_ways.get("left", 0):
+            x, y = self.get_left_position()
+            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
+                self.mark_position(x, y, 2)
+        
+        if possible_ways.get("right", 0):
+            x, y = self.get_right_position()
+            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
+                self.mark_position(x, y, 2)
+        
+        # Update available directions label
+        available_text = ", ".join([f"{k}:{v}" for k,v in possible_ways.items()])
+        self.available_label.config(text=f"Available: {available_text}")
+    
+    def get_forward_position(self):
+        """Calculate forward position based on current direction"""
+        if self.robot_direction == 0:    # Left
+            return self.robot_x - 1, self.robot_y
+        elif self.robot_direction == 1:  # Right
+            return self.robot_x + 1, self.robot_y
+        elif self.robot_direction == 2:  # Forward
+            return self.robot_x, self.robot_y - 1
+        else:                            # Backward
+            return self.robot_x, self.robot_y + 1
+    
+    def get_left_position(self):
+        """Calculate left position based on current direction"""
+        if self.robot_direction == 0:    # Left
+            return self.robot_x, self.robot_y + 1
+        elif self.robot_direction == 1:  # Right
+            return self.robot_x, self.robot_y - 1
+        elif self.robot_direction == 2:  # Forward
+            return self.robot_x - 1, self.robot_y
+        else:                            # Backward
+            return self.robot_x + 1, self.robot_y
+    
+    def get_right_position(self):
+        """Calculate right position based on current direction"""
+        if self.robot_direction == 0:    # Left
+            return self.robot_x, self.robot_y - 1
+        elif self.robot_direction == 1:  # Right
+            return self.robot_x, self.robot_y + 1
+        elif self.robot_direction == 2:  # Forward
+            return self.robot_x + 1, self.robot_y
+        else:                            # Backward
+            return self.robot_x - 1, self.robot_y
+    
+
+    
+    def mark_position(self, x, y, state):
+        """Mark position with specified state"""
+        if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
+            self.grid[x][y] = state
+    
     def draw_grid(self):
         """Draw the grid visualization with direction indicator"""
         self.canvas.delete("all")
         
-        # Draw cells
         for x in range(self.grid_cells):
             for y in range(self.grid_cells):
                 screen_x = x * self.cell_size
@@ -182,53 +374,83 @@ class LabyrinthGridVisualizer:
                 
                 # Determine cell color
                 if (x, y) == (self.robot_x, self.robot_y):
-                    # Draw blue square for current position
-                    self.canvas.create_rectangle(
-                        screen_x, screen_y,
-                        screen_x + self.cell_size, screen_y + self.cell_size,
-                        fill="blue", outline="black"
-                    )
-                    
-                    # Draw direction indicator (arrow)
+                    color = "blue"  # Current position
+                elif self.grid[x][y] == 1:
+                    color = "red"   # Visited
+                elif self.grid[x][y] == 2:
+                    color = "green" # Available
+                else:
+                    color = "white" # Unvisited
+                
+                # Draw cell
+                self.canvas.create_rectangle(
+                    screen_x, screen_y,
+                    screen_x + self.cell_size, screen_y + self.cell_size,
+                    fill=color, outline="black"
+                )
+                
+                # Draw direction indicator if current position
+                if (x, y) == (self.robot_x, self.robot_y):
                     arrow_size = self.cell_size // 3
                     center_x = screen_x + self.cell_size // 2
                     center_y = screen_y + self.cell_size // 2
                     
-                    if self.robot_direction == 1:  # Forward/Up
-                        self.canvas.create_polygon(
-                            center_x, center_y - arrow_size,
-                            center_x - arrow_size//2, center_y,
-                            center_x + arrow_size//2, center_y,
-                            fill="white", outline="black"
-                        )
-                    elif self.robot_direction == 2:  # Left
+                    if self.robot_direction == 0:    # Left
                         self.canvas.create_polygon(
                             center_x - arrow_size, center_y,
                             center_x, center_y - arrow_size//2,
                             center_x, center_y + arrow_size//2,
                             fill="white", outline="black"
                         )
-                    elif self.robot_direction == 3:  # Right
+                    elif self.robot_direction == 1:  # Right
                         self.canvas.create_polygon(
                             center_x + arrow_size, center_y,
                             center_x, center_y - arrow_size//2,
                             center_x, center_y + arrow_size//2,
                             fill="white", outline="black"
                         )
-                    elif self.robot_direction == 4:  # Backward/Down
+                    elif self.robot_direction == 2:  # Forward
+                        self.canvas.create_polygon(
+                            center_x, center_y - arrow_size,
+                            center_x - arrow_size//2, center_y,
+                            center_x + arrow_size//2, center_y,
+                            fill="white", outline="black"
+                        )
+                    elif self.robot_direction == 3:  # Backward
                         self.canvas.create_polygon(
                             center_x, center_y + arrow_size,
                             center_x - arrow_size//2, center_y,
                             center_x + arrow_size//2, center_y,
                             fill="white", outline="black"
                         )
-                else:
-                    # Regular cell (unvisited)
-                    self.canvas.create_rectangle(
-                        screen_x, screen_y,
-                        screen_x + self.cell_size, screen_y + self.cell_size,
-                        fill="white", outline="black"
-                    )
+    
+    def watch_file(self):
+        """Monitor output file for changes (for auto mode)"""
+        if self.mode_var.get() == "Auto Mode" and os.path.exists(self.file_path):
+            mod_time = os.path.getmtime(self.file_path)
+            if mod_time != self.last_mod_time:
+                self.last_mod_time = mod_time
+                try:
+                    with open(self.file_path, 'r') as f:
+                        data = json.load(f)
+                        self.process_sensor_data(data)
+                except (json.JSONDecodeError, IOError) as e:
+                    print(f"Error reading file: {e}")
+        
+        self.root.after(100, self.watch_file)
+    
+    def process_sensor_data(self, data):
+        """Process data from sensor file"""
+        possible_ways = data.get("possible_ways", {})
+        self.update_available_cells(possible_ways)
+        
+        # Update direction if changed
+        new_dir = int(data.get("current_direction", self.robot_direction))
+        if new_dir != self.robot_direction:
+            self.robot_direction = new_dir
+            self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+        
+        self.draw_grid()
 
 def main():
     # First show the startup dialog
@@ -253,6 +475,7 @@ def main():
     main_root.geometry("800x600")
     app = LabyrinthGridVisualizer(main_root, start_x, start_y, start_direction)
     main_root.mainloop()
+
 
 if __name__ == "__main__":
     main()
