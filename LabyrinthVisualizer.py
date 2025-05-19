@@ -11,7 +11,7 @@ class StartupDialog:
         
         # Default grid size (9x9 for 282cm/30cm)
         self.grid_size = 9
-        self.direction = 1  # Default direction (1=Up, 2=Left, 3=Right, 4=Down)
+        self.direction = 0  # Default direction (0=Up, 1=Right, 2=Down, 3=Left)
         
         # Create the dialog content
         ttk.Label(root, text="Set Initial Position", font=('Arial', 12, 'bold')).pack(pady=10)
@@ -47,10 +47,10 @@ class StartupDialog:
         # Create direction buttons in a cross pattern
         self.dir_btns = {}
         directions = {
-            1: ("▲ Up", (1, 0)),
-            2: ("◄ Left", (0, 1)),
-            3: ("► Right", (2, 1)),
-            4: ("▼ Down", (1, 2))
+            0: ("▲ Up", (1, 0)),
+            3: ("◄ Left", (0, 1)),
+            1: ("► Right", (2, 1)),
+            2: ("▼ Down", (1, 2))
         }
         
         for dir_num, (text, pos) in directions.items():
@@ -60,7 +60,7 @@ class StartupDialog:
             self.dir_btns[dir_num] = btn
         
         # Highlight default direction
-        self.set_direction(1)
+        self.set_direction(0)
         
         # Start Button
         ttk.Button(root, text="Start Simulation", command=self.start_simulation).pack(pady=20)
@@ -77,7 +77,6 @@ class StartupDialog:
             else:
                 btn.configure(style='TButton')
 
-    
     def start_simulation(self):
         """Get the values and close the dialog"""
         try:
@@ -102,7 +101,7 @@ class LabyrinthGridVisualizer:
         self.grid_cells = 9   # 282cm / 30cm ≈ 9.4 → 9 cells
         self.robot_x = start_x
         self.robot_y = start_y
-        self.robot_direction = start_direction  # 0=left, 1=right, 2=forward, 3=backward
+        self.robot_direction = start_direction  # 0=Up, 1=Right, 2=Down, 3=Left
         
         # Grid states: 0=unvisited, 1=visited, 2=available, 3=current
         self.grid = [[0 for _ in range(self.grid_cells)] for _ in range(self.grid_cells)]
@@ -142,10 +141,9 @@ class LabyrinthGridVisualizer:
         self.draw_grid()
         self.watch_file()
 
-
     def get_direction_string(self):
         """Get string representation of current direction"""
-        directions = {0: "Left", 1: "Right", 2: "Forward", 3: "Backward"}
+        directions = {0: "Up", 1: "Right", 2: "Down", 3: "Left"}
         return directions.get(self.robot_direction, "Unknown")
 
     def create_control_panel(self):
@@ -198,7 +196,6 @@ class LabyrinthGridVisualizer:
         self.create_legend_item("green", "Available")
         self.create_legend_item("blue", "Current Position")
 
-    
     def create_legend_item(self, color, text):
         """Helper to create legend items"""
         frame = ttk.Frame(self.right_frame)
@@ -228,56 +225,61 @@ class LabyrinthGridVisualizer:
             messagebox.showwarning("Invalid Move", f"Cannot turn {direction} - path not available")
             return
         
-        # Mark current position as visited before moving
-        self.mark_position(self.robot_x, self.robot_y, 1)
+        # Mark current position as visited before moving (unless it's already visited)
+        if self.grid[self.robot_x][self.robot_y] != 1:
+            self.mark_position(self.robot_x, self.robot_y, 1)
         
-        # Update position and direction based on movement
         if direction == "forward":
-            if self.robot_direction == 0:    # Facing left
-                self.robot_x -= 1
-            elif self.robot_direction == 1:  # Facing right
-                self.robot_x += 1
-            elif self.robot_direction == 2:  # Facing up
+            if self.robot_direction == 0:    # Up
                 self.robot_y -= 1
-            elif self.robot_direction == 3:  # Facing down
+            elif self.robot_direction == 1:  # Right
+                self.robot_x += 1
+            elif self.robot_direction == 2:  # Down
                 self.robot_y += 1
+            elif self.robot_direction == 3:  # Left
+                self.robot_x -= 1
         elif direction == "left":
-            # Change direction and move one cell left relative to current facing
-            if self.robot_direction == 0:    # Was facing left, now facing down
-                self.robot_direction = 3
-                self.robot_y += 1
-            elif self.robot_direction == 1:  # Was facing right, now facing up
-                self.robot_direction = 2
+            # Turn left (counter-clockwise)
+            self.robot_direction = (self.robot_direction - 1) % 4
+            # Then move forward
+            if self.robot_direction == 0:    # Up
                 self.robot_y -= 1
-            elif self.robot_direction == 2:  # Was facing up, now facing left
-                self.robot_direction = 0
+            elif self.robot_direction == 1:  # Right
+                self.robot_x += 1
+            elif self.robot_direction == 2:  # Down
+                self.robot_y += 1
+            elif self.robot_direction == 3:  # Left
                 self.robot_x -= 1
-            elif self.robot_direction == 3:  # Was facing down, now facing right
-                self.robot_direction = 1
-                self.robot_x += 1
         elif direction == "right":
-            # Change direction and move one cell right relative to current facing
-            if self.robot_direction == 0:    # Was facing left, now facing up
-                self.robot_direction = 2
+            # Turn right (clockwise)
+            self.robot_direction = (self.robot_direction + 1) % 4
+            # Then move forward
+            if self.robot_direction == 0:    # Up
                 self.robot_y -= 1
-            elif self.robot_direction == 1:  # Was facing right, now facing down
-                self.robot_direction = 3
-                self.robot_y += 1
-            elif self.robot_direction == 2:  # Was facing up, now facing right
-                self.robot_direction = 1
+            elif self.robot_direction == 1:  # Right
                 self.robot_x += 1
-            elif self.robot_direction == 3:  # Was facing down, now facing left
-                self.robot_direction = 0
+            elif self.robot_direction == 2:  # Down
+                self.robot_y += 1
+            elif self.robot_direction == 3:  # Left
                 self.robot_x -= 1
         elif direction == "backward":
-            # Change direction without moving (face backward)
-            self.robot_direction = (self.robot_direction + 2) % 4  # Reverse direction
+            # First turn 180 degrees (reverse direction)
+            self.robot_direction = (self.robot_direction + 2) % 4
+            # Then move forward in the new direction
+            if self.robot_direction == 0:    # Up
+                self.robot_y -= 1
+            elif self.robot_direction == 1:  # Right
+                self.robot_x += 1
+            elif self.robot_direction == 2:  # Down
+                self.robot_y += 1
+            elif self.robot_direction == 3:  # Left
+                self.robot_x -= 1
         
         # Ensure new position is within bounds
         self.robot_x = max(0, min(self.grid_cells-1, self.robot_x))
         self.robot_y = max(0, min(self.grid_cells-1, self.robot_y))
         
-        # Mark new position as current
+        # Mark new position as current (blue) - this will override any previous state
         self.mark_position(self.robot_x, self.robot_y, 3)
         
         # Update available cells based on possible ways
@@ -297,26 +299,44 @@ class LabyrinthGridVisualizer:
         """Update available cells based on possible ways"""
         self.available_cells = possible_ways.copy()
         
-        # Clear previous available cells
+        # Clear only the cells that were available (2) but aren't available anymore
         for x in range(self.grid_cells):
             for y in range(self.grid_cells):
-                if self.grid[x][y] == 2:  # Available
-                    self.grid[x][y] = 0   # Reset to unvisited
+                # Only reset if it was available (2) and not in possible ways
+                if self.grid[x][y] == 2:
+                    # Check if this cell is no longer available
+                    is_still_available = False
+                    if possible_ways.get("forward", 0):
+                        fx, fy = self.get_forward_position()
+                        if (x, y) == (fx, fy):
+                            is_still_available = True
+                    if possible_ways.get("left", 0) and not is_still_available:
+                        lx, ly = self.get_left_position()
+                        if (x, y) == (lx, ly):
+                            is_still_available = True
+                    if possible_ways.get("right", 0) and not is_still_available:
+                        rx, ry = self.get_right_position()
+                        if (x, y) == (rx, ry):
+                            is_still_available = True
+                    
+                    if not is_still_available:
+                        # Only reset to unvisited if it wasn't visited before
+                        self.grid[x][y] = 0
         
-        # Mark new available cells
+        # Mark new available cells if they're not already visited
         if possible_ways.get("forward", 0):
             x, y = self.get_forward_position()
-            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
+            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells and self.grid[x][y] != 1:
                 self.mark_position(x, y, 2)
         
         if possible_ways.get("left", 0):
             x, y = self.get_left_position()
-            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
+            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells and self.grid[x][y] != 1:
                 self.mark_position(x, y, 2)
         
         if possible_ways.get("right", 0):
             x, y = self.get_right_position()
-            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
+            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells and self.grid[x][y] != 1:
                 self.mark_position(x, y, 2)
         
         # Update available directions label
@@ -325,38 +345,36 @@ class LabyrinthGridVisualizer:
     
     def get_forward_position(self):
         """Calculate forward position based on current direction"""
-        if self.robot_direction == 0:    # Left
-            return self.robot_x - 1, self.robot_y
+        if self.robot_direction == 0:    # Up
+            return self.robot_x, self.robot_y - 1
         elif self.robot_direction == 1:  # Right
             return self.robot_x + 1, self.robot_y
-        elif self.robot_direction == 2:  # Forward
-            return self.robot_x, self.robot_y - 1
-        else:                            # Backward
+        elif self.robot_direction == 2:  # Down
             return self.robot_x, self.robot_y + 1
+        elif self.robot_direction == 3:  # Left
+            return self.robot_x - 1, self.robot_y
     
     def get_left_position(self):
         """Calculate left position based on current direction"""
-        if self.robot_direction == 0:    # Left
-            return self.robot_x, self.robot_y + 1
+        if self.robot_direction == 0:    # Up
+            return self.robot_x - 1, self.robot_y
         elif self.robot_direction == 1:  # Right
             return self.robot_x, self.robot_y - 1
-        elif self.robot_direction == 2:  # Forward
-            return self.robot_x - 1, self.robot_y
-        else:                            # Backward
+        elif self.robot_direction == 2:  # Down
             return self.robot_x + 1, self.robot_y
+        elif self.robot_direction == 3:  # Left
+            return self.robot_x, self.robot_y + 1
     
     def get_right_position(self):
         """Calculate right position based on current direction"""
-        if self.robot_direction == 0:    # Left
-            return self.robot_x, self.robot_y - 1
+        if self.robot_direction == 0:    # Up
+            return self.robot_x + 1, self.robot_y
         elif self.robot_direction == 1:  # Right
             return self.robot_x, self.robot_y + 1
-        elif self.robot_direction == 2:  # Forward
-            return self.robot_x + 1, self.robot_y
-        else:                            # Backward
+        elif self.robot_direction == 2:  # Down
             return self.robot_x - 1, self.robot_y
-    
-
+        elif self.robot_direction == 3:  # Left
+            return self.robot_x, self.robot_y - 1
     
     def mark_position(self, x, y, state):
         """Mark position with specified state"""
@@ -395,11 +413,11 @@ class LabyrinthGridVisualizer:
                     center_x = screen_x + self.cell_size // 2
                     center_y = screen_y + self.cell_size // 2
                     
-                    if self.robot_direction == 0:    # Left
+                    if self.robot_direction == 0:    # Up
                         self.canvas.create_polygon(
-                            center_x - arrow_size, center_y,
-                            center_x, center_y - arrow_size//2,
-                            center_x, center_y + arrow_size//2,
+                            center_x, center_y - arrow_size,
+                            center_x - arrow_size//2, center_y,
+                            center_x + arrow_size//2, center_y,
                             fill="white", outline="black"
                         )
                     elif self.robot_direction == 1:  # Right
@@ -409,18 +427,18 @@ class LabyrinthGridVisualizer:
                             center_x, center_y + arrow_size//2,
                             fill="white", outline="black"
                         )
-                    elif self.robot_direction == 2:  # Forward
-                        self.canvas.create_polygon(
-                            center_x, center_y - arrow_size,
-                            center_x - arrow_size//2, center_y,
-                            center_x + arrow_size//2, center_y,
-                            fill="white", outline="black"
-                        )
-                    elif self.robot_direction == 3:  # Backward
+                    elif self.robot_direction == 2:  # Down
                         self.canvas.create_polygon(
                             center_x, center_y + arrow_size,
                             center_x - arrow_size//2, center_y,
                             center_x + arrow_size//2, center_y,
+                            fill="white", outline="black"
+                        )
+                    elif self.robot_direction == 3:  # Left
+                        self.canvas.create_polygon(
+                            center_x - arrow_size, center_y,
+                            center_x, center_y - arrow_size//2,
+                            center_x, center_y + arrow_size//2,
                             fill="white", outline="black"
                         )
     
@@ -475,7 +493,6 @@ def main():
     main_root.geometry("800x600")
     app = LabyrinthGridVisualizer(main_root, start_x, start_y, start_direction)
     main_root.mainloop()
-
 
 if __name__ == "__main__":
     main()
