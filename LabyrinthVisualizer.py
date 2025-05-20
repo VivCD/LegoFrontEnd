@@ -135,7 +135,7 @@ class LabyrinthGridVisualizer:
         self.root.bind('b', lambda e: self.manual_move("backward"))
         
         # File monitoring
-        self.file_path = 'outputFile.txt'
+        self.file_path = '/home/vivi/Desktop/LegoRobotOutputFile/outputFile.txt'
         self.last_mod_time = 0
         self.set_mode()
         self.draw_grid()
@@ -212,6 +212,71 @@ class LabyrinthGridVisualizer:
             for btn in [self.btn_forward, self.btn_left, self.btn_right, self.btn_backward]:
                 btn.configure(state=tk.DISABLED)
     
+    def watch_file(self):
+        """Monitor output file for changes"""
+        try:
+            if os.path.exists(self.file_path):
+                mod_time = os.path.getmtime(self.file_path)
+                if mod_time != self.last_mod_time:
+                    self.last_mod_time = mod_time
+                    self.process_sensor_file()
+        except Exception as e:
+            print(f"Error checking file: {e}")
+        
+        self.root.after(100, self.watch_file)
+
+    def process_sensor_file(self):
+        """Process the sensor data file"""
+        try:
+            with open(self.file_path, 'r') as f:
+                content = f.read().strip()
+                
+                # Clean the content if needed
+                if content.startswith('[') and content.endswith(']'):
+                    content = content[1:-1]  # Remove brackets if present
+                
+                # Parse JSON data
+                data = json.loads(content)
+                
+                # Process the data (only update available moves, ignore direction)
+                possible_ways = data.get("possible_ways", {})
+                self.update_available_cells(possible_ways)
+                
+                # Update the available paths label
+                available_text = ", ".join([f"{k}:{v}" for k, v in possible_ways.items()])
+                self.available_label.config(text=f"Available: {available_text}")
+                
+                # Force UI update
+                self.draw_grid()
+                
+        except json.JSONDecodeError:
+            print("Invalid JSON format in file")
+        except IOError as e:
+            print(f"Error reading file: {e}")
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+
+    def update_available_cells(self, possible_ways):
+        """Update available cells based on possible ways"""
+        self.available_cells = possible_ways.copy()
+        
+        # Clear all previously available cells
+        for x in range(self.grid_cells):
+            for y in range(self.grid_cells):
+                if self.grid[x][y] == 2:  # Available state
+                    self.grid[x][y] = 0   # Reset to unvisited
+        
+        # Mark new available cells
+        directions = {
+            "forward": self.get_forward_position(),
+            "left": self.get_left_position(),
+            "right": self.get_right_position()
+        }
+        
+        for direction, (x, y) in directions.items():
+            if possible_ways.get(direction, 0) and 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
+                self.mark_position(x, y, 2)  # Mark as available
+
     def manual_move(self, direction):
         """Handle manual movement commands"""
         if self.mode_var.get() != "Manual Mode":
@@ -282,66 +347,13 @@ class LabyrinthGridVisualizer:
         # Mark new position as current (blue) - this will override any previous state
         self.mark_position(self.robot_x, self.robot_y, 3)
         
-        # Update available cells based on possible ways
-        possible_ways = {
-            "right": self.available_cells.get("right", 0),
-            "left": self.available_cells.get("left", 0),
-            "forward": self.available_cells.get("forward", 0)
-        }
-        self.update_available_cells(possible_ways)
+        # Update available cells from file after moving
+        self.process_sensor_file()
         
         # Update UI
         self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
         self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
         self.draw_grid()
-    
-    def update_available_cells(self, possible_ways):
-        """Update available cells based on possible ways"""
-        self.available_cells = possible_ways.copy()
-        
-        # Clear only the cells that were available (2) but aren't available anymore
-        for x in range(self.grid_cells):
-            for y in range(self.grid_cells):
-                # Only reset if it was available (2) and not in possible ways
-                if self.grid[x][y] == 2:
-                    # Check if this cell is no longer available
-                    is_still_available = False
-                    if possible_ways.get("forward", 0):
-                        fx, fy = self.get_forward_position()
-                        if (x, y) == (fx, fy):
-                            is_still_available = True
-                    if possible_ways.get("left", 0) and not is_still_available:
-                        lx, ly = self.get_left_position()
-                        if (x, y) == (lx, ly):
-                            is_still_available = True
-                    if possible_ways.get("right", 0) and not is_still_available:
-                        rx, ry = self.get_right_position()
-                        if (x, y) == (rx, ry):
-                            is_still_available = True
-                    
-                    if not is_still_available:
-                        # Only reset to unvisited if it wasn't visited before
-                        self.grid[x][y] = 0
-        
-        # Mark new available cells if they're not already visited
-        if possible_ways.get("forward", 0):
-            x, y = self.get_forward_position()
-            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells and self.grid[x][y] != 1:
-                self.mark_position(x, y, 2)
-        
-        if possible_ways.get("left", 0):
-            x, y = self.get_left_position()
-            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells and self.grid[x][y] != 1:
-                self.mark_position(x, y, 2)
-        
-        if possible_ways.get("right", 0):
-            x, y = self.get_right_position()
-            if 0 <= x < self.grid_cells and 0 <= y < self.grid_cells and self.grid[x][y] != 1:
-                self.mark_position(x, y, 2)
-        
-        # Update available directions label
-        available_text = ", ".join([f"{k}:{v}" for k,v in possible_ways.items()])
-        self.available_label.config(text=f"Available: {available_text}")
     
     def get_forward_position(self):
         """Calculate forward position based on current direction"""
@@ -441,34 +453,6 @@ class LabyrinthGridVisualizer:
                             center_x, center_y + arrow_size//2,
                             fill="white", outline="black"
                         )
-    
-    def watch_file(self):
-        """Monitor output file for changes (for auto mode)"""
-        if self.mode_var.get() == "Auto Mode" and os.path.exists(self.file_path):
-            mod_time = os.path.getmtime(self.file_path)
-            if mod_time != self.last_mod_time:
-                self.last_mod_time = mod_time
-                try:
-                    with open(self.file_path, 'r') as f:
-                        data = json.load(f)
-                        self.process_sensor_data(data)
-                except (json.JSONDecodeError, IOError) as e:
-                    print(f"Error reading file: {e}")
-        
-        self.root.after(100, self.watch_file)
-    
-    def process_sensor_data(self, data):
-        """Process data from sensor file"""
-        possible_ways = data.get("possible_ways", {})
-        self.update_available_cells(possible_ways)
-        
-        # Update direction if changed
-        new_dir = int(data.get("current_direction", self.robot_direction))
-        if new_dir != self.robot_direction:
-            self.robot_direction = new_dir
-            self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
-        
-        self.draw_grid()
 
 def main():
     # First show the startup dialog
