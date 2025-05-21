@@ -73,13 +73,14 @@ class LabyrinthVisualizer:
 
         # Start the SSH data stream
         self.start_remote_stream()
+        self.keep_running = True
 
     def start_remote_stream(self):
         """Stream data from remote file via SSH and update GUI"""
         ssh_command = [
             "ssh",
             "root@172.16.16.111",
-            "cat /root/LegoRobotOutputFile/backend_sending_node_data"
+            "tail -F /root/LegoRobotOutputFile/backend_sending_node_data" 
         ]
 
         try:
@@ -97,9 +98,15 @@ class LabyrinthVisualizer:
     def read_from_ssh(self):
         # Check if process has terminated
         if self.proc.poll() is not None:
-            print(f"[ERROR] SSH process ended with code {self.proc.returncode}")
+            print(f"[WARNING] SSH process ended with code {self.proc.returncode}")
             err_output = self.proc.stderr.read()
-            print(f"[ERROR] stderr output: {err_output}")
+            if err_output:
+                print(f"[ERROR] stderr output: {err_output}")
+            
+            # Restart the process if it died unexpectedly
+            if self.proc.returncode != 0:
+                print("[INFO] Attempting to restart SSH process...")
+                self.start_remote_stream()
             return
 
         print("[DEBUG] Checking for new data...")  # Debug point 1
@@ -165,15 +172,26 @@ class LabyrinthVisualizer:
             if parent_id == "Rt" and node_id.startswith("Rt_"):
                 parent_id = "Rt_"
             self.nodes[node_id] = {"parent": parent_id}
-            if parent_id and parent_id in self.nodes:
+            if parent_id:
                 self.edges.append((parent_id, node_id))
 
         self.current_node = node_id
         self.draw_tree()
+            # Force UI update before drawing
+        self.root.update_idletasks()
+        self.current_node = node_id
+        self.draw_tree()
 
     def draw_tree(self):
+        print(f"[DEBUG] Canvas size: {self.canvas.winfo_width()}x{self.canvas.winfo_height()}")
         print(f"[DEBUG] Drawing tree with nodes: {self.nodes.keys()} and edges: {self.edges}")
 
+    # Check canvas size
+        if self.canvas.winfo_width() < 10 or self.canvas.winfo_height() < 10:
+            print("[WARNING] Canvas too small, rescheduling draw")
+            self.root.after(100, self.draw_tree)
+            return
+        
         """Draw the tree visualization"""
         self.canvas.delete("all")
         if not self.nodes:
@@ -236,6 +254,7 @@ class LabyrinthVisualizer:
             self.canvas.create_text(x, y, text=display_text, font=('Arial', 10))
 
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        print("[DEBUG] Finished drawing tree")
         self.auto_zoom_to_fit()
 
     def auto_zoom_to_fit(self):
