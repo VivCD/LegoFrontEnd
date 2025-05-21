@@ -1,6 +1,7 @@
 import json
 import os
 import tkinter as tk
+import threading
 from tkinter import ttk, messagebox
 from collections import defaultdict
 
@@ -67,6 +68,8 @@ class StartupDialog:
         
         # Store the result
         self.result = None
+
+        #add button with auto and manual in the start up dialog
 
     def set_direction(self, direction):
         """Update selected direction and button styles"""
@@ -136,10 +139,34 @@ class LabyrinthGridVisualizer:
         
         # File monitoring
         self.file_path = '/home/vivi/Desktop/LegoRobotOutputFile/outputFile.txt'
+        self.auto_path = '/home/vivi/Desktop/LegoRobotOutputFile/autoFile.txt'
         self.last_mod_time = 0
+        self.auto_last_mod_time = 0
+        self.auto_instructions = []
+        self.current_auto_index = 0
+        self.auto_running = False
+        self.auto_delay = 1000  # Delay between auto moves in ms
+        
+        # Initialize file monitoring variables BEFORE calling watch_file()
+        self.last_processed_content = ""  # Track last processed file content
+        self.processing_lock = False      # Prevent recursive processing
+        self.file_check_delay = 500       # Milliseconds between file checks
+        
         self.set_mode()
         self.draw_grid()
-        self.watch_file()
+        self.watch_file()  # Now this is safe to call
+
+    def set_mode(self):
+        """Enable/disable manual controls based on mode"""
+        if self.mode_var.get() == "Manual Mode":
+            for btn in [self.btn_forward, self.btn_left, self.btn_right, self.btn_backward]:
+                btn.configure(state=tk.NORMAL)
+            self.auto_running = False
+        else:
+            for btn in [self.btn_forward, self.btn_left, self.btn_right, self.btn_backward]:
+                btn.configure(state=tk.DISABLED)
+            self.auto_running = True
+            self.process_auto_file()
 
     def get_direction_string(self):
         """Get string representation of current direction"""
@@ -213,48 +240,81 @@ class LabyrinthGridVisualizer:
                 btn.configure(state=tk.DISABLED)
     
     def watch_file(self):
-        """Monitor output file for changes"""
+        """Monitor output files for changes with cooldown"""
+        if self.processing_lock:
+            self.root.after(self.file_check_delay, self.watch_file)
+            return
+            
         try:
+            # Check sensor file
             if os.path.exists(self.file_path):
-                mod_time = os.path.getmtime(self.file_path)
-                if mod_time != self.last_mod_time:
-                    self.last_mod_time = mod_time
-                    self.process_sensor_file()
+                with open(self.file_path, 'r') as f:
+                    current_content = f.read().strip()
+                    
+                    if current_content != self.last_processed_content:
+                        self.last_processed_content = current_content
+                        self.processing_lock = True
+                        self.process_sensor_file()
+                        self.processing_lock = False
+            
+            # Check auto file in auto mode
+            if self.mode_var.get() == "Auto Mode" and os.path.exists(self.auto_path):
+                with open(self.auto_path, 'r') as f:
+                    current_content = f.read().strip()
+                    
+                    if current_content != self.last_processed_content:
+                        self.last_processed_content = current_content
+                        self.processing_lock = True
+                        self.process_auto_file()
+                        self.processing_lock = False
+        
         except Exception as e:
             print(f"Error checking file: {e}")
+            self.processing_lock = False
         
-        self.root.after(100, self.watch_file)
+        self.root.after(self.file_check_delay, self.watch_file)
 
     def process_sensor_file(self):
-        """Process the sensor data file"""
+        """Process the sensor data file with movement cooldown"""
         try:
-            with open(self.file_path, 'r') as f:
-                content = f.read().strip()
+            if not self.last_processed_content:
+                return
                 
-                # Clean the content if needed
-                if content.startswith('[') and content.endswith(']'):
-                    content = content[1:-1]  # Remove brackets if present
+            print(f"Processing file content: {self.last_processed_content[:50]}...")  # Truncate for display
+            
+            data = json.loads(self.last_processed_content)
+            print(f"Parsed data: {data}")
+            
+            # Extract movement information
+            node_id = data.get("node_id", "")
+            possible_ways = data.get("possible_ways", {})
+            
+            # Update available moves
+            self.update_available_cells(possible_ways)
+            
+            # Only move if we have a new node_id that indicates movement
+            if "_F" in node_id and not hasattr(self, 'last_node_id'):
+                self.perform_move("forward")
+            elif "_F" in node_id and node_id != getattr(self, 'last_node_id', ""):
+                self.perform_move("forward")
+            elif "_L" in node_id and node_id != getattr(self, 'last_node_id', ""):
+                self.perform_move("left")
+            elif "_R" in node_id and node_id != getattr(self, 'last_node_id', ""):
+                self.perform_move("right")
                 
-                # Parse JSON data
-                data = json.loads(content)
-                
-                # Process the data (only update available moves, ignore direction)
-                possible_ways = data.get("possible_ways", {})
-                self.update_available_cells(possible_ways)
-                
-                # Update the available paths label
-                available_text = ", ".join([f"{k}:{v}" for k, v in possible_ways.items()])
-                self.available_label.config(text=f"Available: {available_text}")
-                
-                # Force UI update
-                self.draw_grid()
-                
-        except json.JSONDecodeError:
-            print("Invalid JSON format in file")
-        except IOError as e:
-            print(f"Error reading file: {e}")
+            self.last_node_id = node_id
+            
+            # Update UI
+            self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
+            self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+            available_text = ", ".join([f"{k}:{v}" for k, v in possible_ways.items()])
+            self.available_label.config(text=f"Available: {available_text}")
+            self.draw_grid()
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            print(f"Error processing sensor file: {e}")
 
     def update_available_cells(self, possible_ways):
         """Update available cells based on possible ways"""
@@ -277,11 +337,144 @@ class LabyrinthGridVisualizer:
             if possible_ways.get(direction, 0) and 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
                 self.mark_position(x, y, 2)  # Mark as available
 
+    def process_auto_file(self):
+        """Process the auto mode instructions file with better movement handling"""
+        try:
+            if not os.path.exists(self.auto_path):
+                print("Auto file not found")
+                return
+
+            with open(self.auto_path, 'r') as f:
+                content = f.read().strip()
+                
+                if not content:
+                    print("Empty auto file")
+                    return
+                
+                print(f"Raw auto content: {content}")  # Debug output
+                
+                # Parse JSON data or plain text
+                try:
+                    data = json.loads(content)
+                except json.JSONDecodeError:
+                    # If not JSON, treat as plain text instructions
+                    instructions = content.split()
+                    self.auto_instructions = [inst.lower() for inst in instructions if inst.lower() in ['f', 'l', 'r', 'b']]
+                else:
+                    # If JSON, extract instructions
+                    if isinstance(data, dict):
+                        instruction = data.get("instruction", "").lower()
+                        self.auto_instructions = [instruction] if instruction in ['f', 'l', 'r', 'b'] else []
+                    elif isinstance(data, list):
+                        self.auto_instructions = [item.get("instruction", "").lower() for item in data 
+                                               if isinstance(item, dict) and item.get("instruction", "").lower() in ['f', 'l', 'r', 'b']]
+                
+                print(f"Auto instructions: {self.auto_instructions}")  # Debug output
+                
+                self.current_auto_index = 0
+                if self.auto_instructions:
+                    self.execute_next_auto_move()
+                
+        except Exception as e:
+            print(f"Error processing auto file: {e}")
+
+
+    def execute_next_auto_move(self):
+        """Execute the next move in auto mode with better movement validation"""
+        if not self.auto_running or self.current_auto_index >= len(self.auto_instructions):
+            return
+        
+        instruction = self.auto_instructions[self.current_auto_index]
+        self.current_auto_index += 1
+        
+        # Map instruction to movement
+        move_map = {
+            'f': 'forward',
+            'l': 'left',
+            'r': 'right',
+            'b': 'backward'
+        }
+        
+        direction = move_map.get(instruction, None)
+        if direction:
+            success = self.perform_move(direction)
+            print(f"Auto move {direction} {'succeeded' if success else 'failed'}")
+        
+        # Schedule next move if there are more instructions
+        if self.current_auto_index < len(self.auto_instructions):
+            self.root.after(self.auto_delay, self.execute_next_auto_move)
+
+    def perform_move(self, direction):
+        """Perform a move with movement validation"""
+        print(f"Attempting move: {direction}")
+        
+        # Check if move is available
+        if direction in ["forward", "left", "right"] and not self.available_cells.get(direction, 0):
+            print(f"Cannot move {direction} - path not available")
+            return False
+        
+        old_x, old_y = self.robot_x, self.robot_y
+        old_direction = self.robot_direction
+        
+        try:
+            # Mark current position as visited before moving
+            if self.grid[self.robot_x][self.robot_y] != 1:
+                self.mark_position(self.robot_x, self.robot_y, 1)
+            
+            # Calculate new position
+            if direction == "forward":
+                if self.robot_direction == 0:    # Up
+                    self.robot_y -= 1
+                elif self.robot_direction == 1:  # Right
+                    self.robot_x += 1
+                elif self.robot_direction == 2:  # Down
+                    self.robot_y += 1
+                elif self.robot_direction == 3:  # Left
+                    self.robot_x -= 1
+            elif direction == "left":
+                self.robot_direction = (self.robot_direction - 1) % 4
+                if self.robot_direction == 0:    # Up
+                    self.robot_y -= 1
+                elif self.robot_direction == 1:  # Right
+                    self.robot_x += 1
+                elif self.robot_direction == 2:  # Down
+                    self.robot_y += 1
+                elif self.robot_direction == 3:  # Left
+                    self.robot_x -= 1
+            elif direction == "right":
+                self.robot_direction = (self.robot_direction + 1) % 4
+                if self.robot_direction == 0:    # Up
+                    self.robot_y -= 1
+                elif self.robot_direction == 1:  # Right
+                    self.robot_x += 1
+                elif self.robot_direction == 2:  # Down
+                    self.robot_y += 1
+                elif self.robot_direction == 3:  # Left
+                    self.robot_x -= 1
+            
+            # Ensure position is within bounds
+            self.robot_x = max(0, min(self.grid_cells-1, self.robot_x))
+            self.robot_y = max(0, min(self.grid_cells-1, self.robot_y))
+            
+            # Mark new position
+            self.mark_position(self.robot_x, self.robot_y, 3)
+            
+            print(f"Moved {direction} to ({self.robot_x}, {self.robot_y})")
+            return True
+            
+        except Exception as e:
+            # Revert on error
+            self.robot_x, self.robot_y = old_x, old_y
+            self.robot_direction = old_direction
+            print(f"Error during move: {e}")
+            return False
+
     def manual_move(self, direction):
         """Handle manual movement commands"""
         if self.mode_var.get() != "Manual Mode":
             return
-        
+        self.perform_move(direction)
+
         # Check if move is available (only for forward movement)
         if direction == "forward" and not self.available_cells.get("forward", 0):
             messagebox.showwarning("Invalid Move", "Cannot move forward - path not available")
