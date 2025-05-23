@@ -9,16 +9,23 @@ class StartupDialog:
     def __init__(self, root):
         self.root = root
         self.root.title("Robot Placement")
+        # Add this to ensure the window can expand
+        self.root.pack_propagate(False)
+
         
         # Default grid size (9x9 for 282cm/30cm)
         self.grid_size = 9
         self.direction = 0  # Default direction (0=Up, 1=Right, 2=Down, 3=Left)
+
+        # Create main container with padding
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Create the dialog content
         ttk.Label(root, text="Set Initial Position", font=('Arial', 12, 'bold')).pack(pady=10)
         
         # Position Frame
-        pos_frame = ttk.Frame(root)
+        pos_frame = ttk.Frame(main_frame)
         pos_frame.pack(pady=10)
         
         # X Position
@@ -38,7 +45,7 @@ class StartupDialog:
         self.y_spinbox.set(self.grid_size//2)  # Default to center
         
         # Direction Selector
-        dir_frame = ttk.LabelFrame(root, text="Initial Direction")
+        dir_frame = ttk.LabelFrame(main_frame, text="Initial Direction")
         dir_frame.pack(pady=10)
         
         # Visual direction buttons
@@ -63,13 +70,21 @@ class StartupDialog:
         # Highlight default direction
         self.set_direction(0)
         
+        # Mode selection
+        mode_frame = ttk.LabelFrame(main_frame, text="Control Mode")
+        mode_frame.pack(pady=10)
+        
+        # In StartupDialog.__init__():
+        self.mode_var = tk.StringVar(value="Auto Mode")  # Changed from "Auto"
+        ttk.Radiobutton(mode_frame, text="Auto Mode", variable=self.mode_var, 
+                    value="Auto Mode").pack(anchor='w', padx=5)  # Changed value
+        ttk.Radiobutton(mode_frame, text="Manual Mode", variable=self.mode_var, 
+                    value="Manual Mode").pack(anchor='w', padx=5)  # Changed value
         # Start Button
-        ttk.Button(root, text="Start Simulation", command=self.start_simulation).pack(pady=20)
+        ttk.Button(main_frame, text="Start Simulation", command=self.start_simulation).pack(pady=(20, 10), fill=tk.X)
         
         # Store the result
         self.result = None
-
-        #add button with auto and manual in the start up dialog
 
     def set_direction(self, direction):
         """Update selected direction and button styles"""
@@ -87,7 +102,8 @@ class StartupDialog:
             y = int(self.y_spinbox.get())
             
             if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
-                self.result = (x, y, self.direction)
+                # Use the mode value directly (it's already "Auto Mode" or "Manual Mode")
+                self.result = (x, y, self.direction, self.mode_var.get())
                 self.root.destroy()
             else:
                 tk.messagebox.showerror("Error", "Position must be between 0 and 8")
@@ -95,7 +111,7 @@ class StartupDialog:
             tk.messagebox.showerror("Error", "Please enter valid numbers")
 
 class LabyrinthGridVisualizer:
-    def __init__(self, root, start_x, start_y, start_direction):
+    def __init__(self, root, start_x, start_y, start_direction, start_mode):
         self.root = root
         self.root.title("Labyrinth Grid Visualizer")
         
@@ -105,6 +121,9 @@ class LabyrinthGridVisualizer:
         self.robot_x = start_x
         self.robot_y = start_y
         self.robot_direction = start_direction  # 0=Up, 1=Right, 2=Down, 3=Left
+        
+        # Initialize mode
+        self.mode_var = tk.StringVar(value=start_mode)
         
         # Grid states: 0=unvisited, 1=visited, 2=available, 3=current
         self.grid = [[0 for _ in range(self.grid_cells)] for _ in range(self.grid_cells)]
@@ -288,22 +307,46 @@ class LabyrinthGridVisualizer:
             # Extract movement information
             node_id = data.get("node_id", "")
             possible_ways = data.get("possible_ways", {})
+            distance = data.get("distance", "30.000000")  # Default to 30cm if not provided
+            self.last_distance = distance  # Store distance for movement calculation
             
             # Update available moves
             self.update_available_cells(possible_ways)
             
-            # Only move if we have a new node_id that indicates movement
-            if "_F" in node_id and not hasattr(self, 'last_node_id'):
-                self.perform_move("forward")
-            elif "_F" in node_id and node_id != getattr(self, 'last_node_id', ""):
-                self.perform_move("forward")
-            elif "_L" in node_id and node_id != getattr(self, 'last_node_id', ""):
-                self.perform_move("left")
-            elif "_R" in node_id and node_id != getattr(self, 'last_node_id', ""):
-                self.perform_move("right")
+            # Check if this is a new node (not the same as last processed)
+            if not hasattr(self, 'last_node_id') or node_id != self.last_node_id:
+                # Split node ID to get movement sequence
+                parts = node_id.split('_')
+                if len(parts) > 1:
+                    movements = parts[1]
+                    
+                    # If we have previous node ID, compare to find the new movement
+                    if hasattr(self, 'last_node_id'):
+                        last_parts = self.last_node_id.split('_')
+                        if len(last_parts) > 1:
+                            last_movements = last_parts[1]
+                            # Find what was added since last time
+                            if movements.startswith(last_movements):
+                                new_movement = movements[len(last_movements):]
+                                if new_movement:
+                                    # Only process the newest movement
+                                    if new_movement[-1] == 'F':
+                                        self.perform_move("forward")
+                                    elif new_movement[-1] == 'L':
+                                        self.perform_move("left")
+                                    elif new_movement[-1] == 'R':
+                                        self.perform_move("right")
+                    else:
+                        # Initial movement (from root)
+                        if movements[-1] == 'F':
+                            self.perform_move("forward")
+                        elif movements[-1] == 'L':
+                            self.perform_move("left")
+                        elif movements[-1] == 'R':
+                            self.perform_move("right")
+                    
+                self.last_node_id = node_id
                 
-            self.last_node_id = node_id
-            
             # Update UI
             self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
             self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
@@ -316,15 +359,187 @@ class LabyrinthGridVisualizer:
         except Exception as e:
             print(f"Error processing sensor file: {e}")
 
+    def perform_move(self, direction):
+        print(f"Attempting move: {direction}")
+        
+        old_x, old_y = self.robot_x, self.robot_y
+        old_direction = self.robot_direction
+        
+        try:
+            # Mark current position as visited before moving
+            if self.grid[self.robot_x][self.robot_y] == 3:  # Only if current position
+                self.mark_position(self.robot_x, self.robot_y, 1)  # Mark as visited
+            
+            # Handle movement or turning
+            new_x, new_y = self.robot_x, self.robot_y
+            cells_to_move = 1  # Default to 1 cell (30cm)
+            
+            # Check if we have distance information
+            if hasattr(self, 'last_distance'):
+                distance = float(self.last_distance)
+                cells_to_move = int(distance / 30)  # Convert cm to cells (30cm per cell)
+                cells_to_move = max(1, min(cells_to_move, 2))  # Limit to 1-2 cells
+            
+            if direction == "forward":
+                # Calculate new position based on current direction and distance
+                if self.robot_direction == 0:    # Up
+                    # Mark all cells in path as visited
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x, self.robot_y - i, 1)
+                    new_y -= cells_to_move
+                elif self.robot_direction == 1:  # Right
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x + i, self.robot_y, 1)
+                    new_x += cells_to_move
+                elif self.robot_direction == 2:  # Down
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x, self.robot_y + i, 1)
+                    new_y += cells_to_move
+                elif self.robot_direction == 3:  # Left
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x - i, self.robot_y, 1)
+                    new_x -= cells_to_move
+                
+                # For forward movement, check if path is available
+                if not self.available_cells.get("forward", 0):
+                    print("Cannot move forward - path not available")
+                    return False
+                    
+                if 0 <= new_x < self.grid_cells and 0 <= new_y < self.grid_cells:
+                    self.robot_x, self.robot_y = new_x, new_y
+                else:
+                    print("Cannot move - out of bounds")
+                    return False
+                    
+            elif direction == "left":
+                # First change direction (counter-clockwise)
+                self.robot_direction = (self.robot_direction - 1) % 4
+                
+                # Then move forward in the new direction
+                if self.robot_direction == 0:    # Up
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x, self.robot_y - i, 1)
+                    new_y -= cells_to_move
+                elif self.robot_direction == 1:  # Right
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x + i, self.robot_y, 1)
+                    new_x += cells_to_move
+                elif self.robot_direction == 2:  # Down
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x, self.robot_y + i, 1)
+                    new_y += cells_to_move
+                elif self.robot_direction == 3:  # Left
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x - i, self.robot_y, 1)
+                    new_x -= cells_to_move
+                    
+                if 0 <= new_x < self.grid_cells and 0 <= new_y < self.grid_cells:
+                    self.robot_x, self.robot_y = new_x, new_y
+                else:
+                    print("Cannot move - out of bounds")
+                    return False
+                    
+            elif direction == "right":
+                # First change direction (clockwise)
+                self.robot_direction = (self.robot_direction + 1) % 4
+                
+                # Then move forward in the new direction
+                if self.robot_direction == 0:    # Up
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x, self.robot_y - i, 1)
+                    new_y -= cells_to_move
+                elif self.robot_direction == 1:  # Right
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x + i, self.robot_y, 1)
+                    new_x += cells_to_move
+                elif self.robot_direction == 2:  # Down
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x, self.robot_y + i, 1)
+                    new_y += cells_to_move
+                elif self.robot_direction == 3:  # Left
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x - i, self.robot_y, 1)
+                    new_x -= cells_to_move
+                    
+                if 0 <= new_x < self.grid_cells and 0 <= new_y < self.grid_cells:
+                    self.robot_x, self.robot_y = new_x, new_y
+                else:
+                    print("Cannot move - out of bounds")
+                    return False
+                    
+            elif direction == "backward":
+                # First turn 180 degrees
+                self.robot_direction = (self.robot_direction + 2) % 4
+                
+                # Then move forward in the new direction
+                if self.robot_direction == 0:    # Up
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x, self.robot_y - i, 1)
+                    new_y -= cells_to_move
+                elif self.robot_direction == 1:  # Right
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x + i, self.robot_y, 1)
+                    new_x += cells_to_move
+                elif self.robot_direction == 2:  # Down
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x, self.robot_y + i, 1)
+                    new_y += cells_to_move
+                elif self.robot_direction == 3:  # Left
+                    for i in range(1, cells_to_move + 1):
+                        self.mark_position(self.robot_x - i, self.robot_y, 1)
+                    new_x -= cells_to_move
+                    
+                if 0 <= new_x < self.grid_cells and 0 <= new_y < self.grid_cells:
+                    self.robot_x, self.robot_y = new_x, new_y
+                else:
+                    print("Cannot move - out of bounds")
+                    return False
+            
+            # Mark new position as current (blue)
+            self.mark_position(self.robot_x, self.robot_y, 3)
+            
+            print(f"Moved {direction} {cells_to_move} cells to ({self.robot_x}, {self.robot_y}), direction: {self.robot_direction}")
+            
+            # Update available cells based on new position/direction
+            self.update_available_cells(self.available_cells)
+            
+            # Update UI
+            self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
+            self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+            self.draw_grid()
+            
+            return True
+            
+        except Exception as e:
+            # Revert on error
+            self.robot_x, self.robot_y = old_x, old_y
+            self.robot_direction = old_direction
+            print(f"Error during move: {e}")
+            return False
+        
     def update_available_cells(self, possible_ways):
         """Update available cells based on possible ways"""
         self.available_cells = possible_ways.copy()
         
-        # Clear all previously available cells
+        # First, clear only the cells that are marked as available (green)
+        # but aren't in our new possible ways
         for x in range(self.grid_cells):
             for y in range(self.grid_cells):
-                if self.grid[x][y] == 2:  # Available state
-                    self.grid[x][y] = 0   # Reset to unvisited
+                # Only reset cells that are available (green) and not current position
+                if self.grid[x][y] == 2 and (x, y) != (self.robot_x, self.robot_y):
+                    # Check if this cell should remain available
+                    is_forward = (x, y) == self.get_forward_position()
+                    is_left = (x, y) == self.get_left_position()
+                    is_right = (x, y) == self.get_right_position()
+                    
+                    should_remain = (
+                        (is_forward and possible_ways.get("forward", 0)) or
+                        (is_left and possible_ways.get("left", 0)) or
+                        (is_right and possible_ways.get("right", 0))
+                    )
+                    
+                    if not should_remain:
+                        self.grid[x][y] = 0  # Reset to unvisited
         
         # Mark new available cells
         directions = {
@@ -335,48 +550,14 @@ class LabyrinthGridVisualizer:
         
         for direction, (x, y) in directions.items():
             if possible_ways.get(direction, 0) and 0 <= x < self.grid_cells and 0 <= y < self.grid_cells:
-                self.mark_position(x, y, 2)  # Mark as available
-
-    def process_auto_file(self):
-        """Process the auto mode instructions file with better movement handling"""
-        try:
-            if not os.path.exists(self.auto_path):
-                print("Auto file not found")
-                return
-
-            with open(self.auto_path, 'r') as f:
-                content = f.read().strip()
-                
-                if not content:
-                    print("Empty auto file")
-                    return
-                
-                print(f"Raw auto content: {content}")  # Debug output
-                
-                # Parse JSON data or plain text
-                try:
-                    data = json.loads(content)
-                except json.JSONDecodeError:
-                    # If not JSON, treat as plain text instructions
-                    instructions = content.split()
-                    self.auto_instructions = [inst.lower() for inst in instructions if inst.lower() in ['f', 'l', 'r', 'b']]
-                else:
-                    # If JSON, extract instructions
-                    if isinstance(data, dict):
-                        instruction = data.get("instruction", "").lower()
-                        self.auto_instructions = [instruction] if instruction in ['f', 'l', 'r', 'b'] else []
-                    elif isinstance(data, list):
-                        self.auto_instructions = [item.get("instruction", "").lower() for item in data 
-                                               if isinstance(item, dict) and item.get("instruction", "").lower() in ['f', 'l', 'r', 'b']]
-                
-                print(f"Auto instructions: {self.auto_instructions}")  # Debug output
-                
-                self.current_auto_index = 0
-                if self.auto_instructions:
-                    self.execute_next_auto_move()
-                
-        except Exception as e:
-            print(f"Error processing auto file: {e}")
+                # Only mark as available if not current position and not already visited
+                if (x, y) != (self.robot_x, self.robot_y) and self.grid[x][y] != 1:
+                    self.mark_position(x, y, 2)  # Mark as available
+        
+        # Update the available label
+        available_text = ", ".join([f"{k}:{v}" for k, v in possible_ways.items()])
+        self.available_label.config(text=f"Available: {available_text}")
+        self.draw_grid()
 
 
     def execute_next_auto_move(self):
@@ -404,149 +585,18 @@ class LabyrinthGridVisualizer:
         if self.current_auto_index < len(self.auto_instructions):
             self.root.after(self.auto_delay, self.execute_next_auto_move)
 
-    def perform_move(self, direction):
-        """Perform a move with movement validation"""
-        print(f"Attempting move: {direction}")
-        
-        # Check if move is available
-        if direction in ["forward", "left", "right"] and not self.available_cells.get(direction, 0):
-            print(f"Cannot move {direction} - path not available")
-            return False
-        
-        old_x, old_y = self.robot_x, self.robot_y
-        old_direction = self.robot_direction
-        
-        try:
-            # Mark current position as visited before moving
-            if self.grid[self.robot_x][self.robot_y] != 1:
-                self.mark_position(self.robot_x, self.robot_y, 1)
-            
-            # Calculate new position
-            if direction == "forward":
-                if self.robot_direction == 0:    # Up
-                    self.robot_y -= 1
-                elif self.robot_direction == 1:  # Right
-                    self.robot_x += 1
-                elif self.robot_direction == 2:  # Down
-                    self.robot_y += 1
-                elif self.robot_direction == 3:  # Left
-                    self.robot_x -= 1
-            elif direction == "left":
-                self.robot_direction = (self.robot_direction - 1) % 4
-                if self.robot_direction == 0:    # Up
-                    self.robot_y -= 1
-                elif self.robot_direction == 1:  # Right
-                    self.robot_x += 1
-                elif self.robot_direction == 2:  # Down
-                    self.robot_y += 1
-                elif self.robot_direction == 3:  # Left
-                    self.robot_x -= 1
-            elif direction == "right":
-                self.robot_direction = (self.robot_direction + 1) % 4
-                if self.robot_direction == 0:    # Up
-                    self.robot_y -= 1
-                elif self.robot_direction == 1:  # Right
-                    self.robot_x += 1
-                elif self.robot_direction == 2:  # Down
-                    self.robot_y += 1
-                elif self.robot_direction == 3:  # Left
-                    self.robot_x -= 1
-            
-            # Ensure position is within bounds
-            self.robot_x = max(0, min(self.grid_cells-1, self.robot_x))
-            self.robot_y = max(0, min(self.grid_cells-1, self.robot_y))
-            
-            # Mark new position
-            self.mark_position(self.robot_x, self.robot_y, 3)
-            
-            print(f"Moved {direction} to ({self.robot_x}, {self.robot_y})")
-            return True
-            
-        except Exception as e:
-            # Revert on error
-            self.robot_x, self.robot_y = old_x, old_y
-            self.robot_direction = old_direction
-            print(f"Error during move: {e}")
-            return False
-
     def manual_move(self, direction):
         """Handle manual movement commands"""
         if self.mode_var.get() != "Manual Mode":
             return
-        self.perform_move(direction)
-
-        # Check if move is available (only for forward movement)
-        if direction == "forward" and not self.available_cells.get("forward", 0):
-            messagebox.showwarning("Invalid Move", "Cannot move forward - path not available")
-            return
-        elif direction in ["left", "right"] and not self.available_cells.get(direction, 0):
-            messagebox.showwarning("Invalid Move", f"Cannot turn {direction} - path not available")
-            return
         
-        # Mark current position as visited before moving (unless it's already visited)
-        if self.grid[self.robot_x][self.robot_y] != 1:
-            self.mark_position(self.robot_x, self.robot_y, 1)
-        
-        if direction == "forward":
-            if self.robot_direction == 0:    # Up
-                self.robot_y -= 1
-            elif self.robot_direction == 1:  # Right
-                self.robot_x += 1
-            elif self.robot_direction == 2:  # Down
-                self.robot_y += 1
-            elif self.robot_direction == 3:  # Left
-                self.robot_x -= 1
-        elif direction == "left":
-            # Turn left (counter-clockwise)
-            self.robot_direction = (self.robot_direction - 1) % 4
-            # Then move forward
-            if self.robot_direction == 0:    # Up
-                self.robot_y -= 1
-            elif self.robot_direction == 1:  # Right
-                self.robot_x += 1
-            elif self.robot_direction == 2:  # Down
-                self.robot_y += 1
-            elif self.robot_direction == 3:  # Left
-                self.robot_x -= 1
-        elif direction == "right":
-            # Turn right (clockwise)
-            self.robot_direction = (self.robot_direction + 1) % 4
-            # Then move forward
-            if self.robot_direction == 0:    # Up
-                self.robot_y -= 1
-            elif self.robot_direction == 1:  # Right
-                self.robot_x += 1
-            elif self.robot_direction == 2:  # Down
-                self.robot_y += 1
-            elif self.robot_direction == 3:  # Left
-                self.robot_x -= 1
-        elif direction == "backward":
-            # First turn 180 degrees (reverse direction)
-            self.robot_direction = (self.robot_direction + 2) % 4
-            # Then move forward in the new direction
-            if self.robot_direction == 0:    # Up
-                self.robot_y -= 1
-            elif self.robot_direction == 1:  # Right
-                self.robot_x += 1
-            elif self.robot_direction == 2:  # Down
-                self.robot_y += 1
-            elif self.robot_direction == 3:  # Left
-                self.robot_x -= 1
-        
-        # Ensure new position is within bounds
-        self.robot_x = max(0, min(self.grid_cells-1, self.robot_x))
-        self.robot_y = max(0, min(self.grid_cells-1, self.robot_y))
-        
-        # Mark new position as current (blue) - this will override any previous state
-        self.mark_position(self.robot_x, self.robot_y, 3)
-        
-        # Update available cells from file after moving
-        self.process_sensor_file()
-        
-        # Update UI
-        self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
-        self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
-        self.draw_grid()
+        if self.perform_move(direction):
+            # Update UI only if move was successful
+            self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
+            self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+            self.draw_grid()
+        else:
+            messagebox.showwarning("Invalid Move", f"Cannot {direction} - path not available")
     
     def get_forward_position(self):
         """Calculate forward position based on current direction"""
@@ -650,7 +700,7 @@ class LabyrinthGridVisualizer:
 def main():
     # First show the startup dialog
     startup_root = tk.Tk()
-    startup_root.geometry("350x400")
+    startup_root.geometry("400x450")
     
     # Create a style for the selected direction button
     style = ttk.Style(startup_root)
@@ -663,12 +713,12 @@ def main():
         return  # User closed the window without setting position
     
     # Get the selected position and direction
-    start_x, start_y, start_direction = dialog.result
+    start_x, start_y, start_direction, start_mode = dialog.result
     
     # Then show the main window with these settings
     main_root = tk.Tk()
     main_root.geometry("800x600")
-    app = LabyrinthGridVisualizer(main_root, start_x, start_y, start_direction)
+    app = LabyrinthGridVisualizer(main_root, start_x, start_y, start_direction, start_mode)
     main_root.mainloop()
 
 if __name__ == "__main__":

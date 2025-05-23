@@ -1,11 +1,12 @@
 import json
-import subprocess
+
 import tkinter as tk
 from tkinter import ttk
-import os
-from collections import defaultdict
-import select
-#pwn python3
+import queue
+import threading
+import subprocess
+from FileProcessor import read_pipe_forever, write_x, stop_event
+
 class LabyrinthVisualizer:
     def __init__(self, root):
         print("[DEBUG] Visualizer starting up")
@@ -65,97 +66,56 @@ class LabyrinthVisualizer:
         self.edges = []
         self.current_node = None
         self.zoom_level = 1.0
+        self.data_queue = queue.Queue()
 
         self.canvas.bind("<MouseWheel>", self.zoom_handler)
         self.canvas.bind("<Button-4>", self.zoom_handler)
         self.canvas.bind("<Button-5>", self.zoom_handler)
         self.canvas.bind("<Configure>", lambda e: self.canvas.focus_set())
 
-        # Start the SSH data stream
-        self.start_remote_stream()
+        # Start the data stream
+        self.start_data_stream()
         self.keep_running = True
 
-    def start_remote_stream(self):
-        """Stream data from remote file via SSH and update GUI"""
-        ssh_command = [
-            "ssh",
-            "root@172.16.16.111",
-            "while true; do cat /tmp/backend_to_frontend_fifo; sleep 0.1; done"
+    def start_data_stream(self):
+        """Start the thread to read data from the pipe"""
+        print("[PIPE DEBUG] Starting data stream thread")
+        self.reader_thread = threading.Thread(
+            target=read_pipe_forever,
+            args=(self.data_queue,),
+            daemon=True
+        )
+        self.reader_thread.start()
+        self.root.after(100, self.process_queue)
 
-        ]
-
+    def process_queue(self):
+        """Process messages from the queue"""
         try:
-            self.proc = subprocess.Popen(ssh_command, 
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE,
-                                    text=True,
-                                    bufsize=1)
-            print("[DEBUG] SSH process started")
-            self.root.after(100, self.read_from_ssh)
-        except Exception as e:
-            print(f"[ERROR] Failed to start SSH process: {e}")
-            self.node_label.config(text=f"SSH Error: {str(e)}")
+            while not self.data_queue.empty():
+                line = self.data_queue.get_nowait()
+                print(f"[RAW RECEIVED] {line}")
+                
+                if line == 'x':
+                    print("Received stop signal")
+                    self.on_close()
+                    return
+                
+                try:
+                    data = json.loads(line)
+                    print(f"[DEBUG] Parsed JSON: {data}")
+                    self.process_data(data)
+                except json.JSONDecodeError:
+                    print(f"[INFO] Plain message received: {line}")
+                    self.node_label.config(text=f"Message: {line}")
+                except Exception as e:
+                    print(f"[CRITICAL] Unexpected error: {str(e)}")
+                    raise
 
-    def read_from_ssh(self):
-        print("[DEBUG] ENTERED read_from_ssh()")
-        # Check if process has terminated
-        if self.proc.poll() is not None:
-            print(f"[WARNING] SSH process ended with code {self.proc.returncode}")
-            err_output = self.proc.stderr.read()
-            if err_output:
-                print(f"[ERROR] stderr output: {err_output}")
-            if self.proc.returncode != 0:
-                print("[INFO] Attempting to restart SSH process...")
-                self.start_remote_stream()
-            return
+        except queue.Empty:
+            pass
 
-        print("[DEBUG] Checking for new data...")
-        
-        data_received = False
-        while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                print("[DEBUG] No more data in buffer")
-                break
-
-            line = line.strip()
-            print(f"[RAW RECEIVED] {line}")
-            data_received = True
-
-            try:
-                data = json.loads(line)
-                print(f"[DEBUG] Parsed JSON: {data}")
-                self.process_data(data)
-            except json.JSONDecodeError:
-                print(f"[INFO] Plain message received: {line}")
-                self.node_label.config(text=f"Message: {line}")
-            except Exception as e:
-                print(f"[CRITICAL] Unexpected error: {str(e)}")
-                raise
-
-        if not data_received:
-            print("[DEBUG] No new data available")
-
-        self.root.after(100, self.read_from_ssh)
-
-
-
-
-    def zoom_handler(self, event):
-        """Handle mouse wheel zooming"""
-        if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
-            zoom_factor = 1.1
-        elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
-            zoom_factor = 0.9
-        else:
-            return
-
-        if 0.2 < self.zoom_level * zoom_factor < 5.0:
-            self.zoom_level *= zoom_factor
-            x = self.canvas.canvasx(event.x)
-            y = self.canvas.canvasy(event.y)
-            self.canvas.scale("all", x, y, zoom_factor, zoom_factor)
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        if not stop_event.is_set():
+            self.root.after(100, self.process_queue)
 
     def process_data(self, data):
         print(f"[DEBUG] Processing node data: {data}")
@@ -174,11 +134,6 @@ class LabyrinthVisualizer:
         else:
             self.distance_label.config(text="Distance: -")
 
-        # Optional: handle "return" status
-        if "return" in data:
-            print(f"[DEBUG] Return flag: {data['return']}")
-
-        # Graph building logic only applies if node_id exists
         if "node_id" in data:
             node_id = data["node_id"]
             if node_id not in self.nodes:
@@ -193,12 +148,27 @@ class LabyrinthVisualizer:
             self.draw_tree()
             self.root.update_idletasks()
 
+    def zoom_handler(self, event):
+        """Handle mouse wheel zooming"""
+        if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
+            zoom_factor = 1.1
+        elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
+            zoom_factor = 0.9
+        else:
+            return
+
+        if 0.2 < self.zoom_level * zoom_factor < 5.0:
+            self.zoom_level *= zoom_factor
+            x = self.canvas.canvasx(event.x)
+            y = self.canvas.canvasy(event.y)
+            self.canvas.scale("all", x, y, zoom_factor, zoom_factor)
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def draw_tree(self):
         print(f"[DEBUG] Canvas size: {self.canvas.winfo_width()}x{self.canvas.winfo_height()}")
         print(f"[DEBUG] Drawing tree with nodes: {self.nodes.keys()} and edges: {self.edges}")
 
-    # Check canvas size
+        # Check canvas size
         if self.canvas.winfo_width() < 10 or self.canvas.winfo_height() < 10:
             print("[WARNING] Canvas too small, rescheduling draw")
             self.root.after(100, self.draw_tree)
@@ -287,21 +257,25 @@ class LabyrinthVisualizer:
             self.zoom_level = new_scale
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
+
     def on_close(self):
         print("[INFO] Closing application...")
-        if hasattr(self, 'proc') and self.proc:
-            try:
-                self.proc.terminate()
-                self.proc.wait(timeout=2)
-                print("[INFO] SSH process terminated")
-            except Exception as e:
-                print(f"[WARN] Error terminating process: {e}")
+        print("[PIPE DEBUG] Setting stop_event and closing pipe")
+        stop_event.set()
+        
+        # Give the pipe reader thread a moment to close
+        print("[PIPE DEBUG] Waiting for reader thread to finish...")
+        self.reader_thread.join(timeout=1.0)
+        if self.reader_thread.is_alive():
+            print("[PIPE WARNING] Reader thread did not exit cleanly")
+        else:
+            print("[PIPE DEBUG] Reader thread exited successfully")
+        
         self.root.quit()
         self.root.destroy()
-
-
-
-
+        print("[PIPE DEBUG] Application fully closed")
+        
+ 
 def main():
     root = tk.Tk()
     root.geometry("1000x700")
@@ -326,4 +300,4 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
-    main()
+    main() 
