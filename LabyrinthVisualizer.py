@@ -196,7 +196,7 @@ class LabyrinthGridVisualizer:
         """Create all control panel elements"""
         # Mode selection
         ttk.Label(self.right_frame, text="Control Mode", font=('Arial', 12, 'bold')).pack(pady=10, anchor='w')
-        self.mode_var = tk.StringVar(value="Auto Mode")
+
         ttk.Radiobutton(self.right_frame, text="Auto Mode", variable=self.mode_var, 
                        value="Auto Mode", command=self.set_mode).pack(anchor='w', padx=5)
         ttk.Radiobutton(self.right_frame, text="Manual Mode", variable=self.mode_var, 
