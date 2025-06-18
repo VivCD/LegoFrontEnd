@@ -1,9 +1,12 @@
 import json
-import os
+
 import tkinter as tk
 import threading
+import queue
+import subprocess
 from tkinter import ttk, messagebox
 from collections import defaultdict
+from FileProcessor import read_pipe_forever, write_x, stop_event  # Import from your existing file
 
 class StartupDialog:
     def __init__(self, root):
@@ -151,29 +154,63 @@ class LabyrinthGridVisualizer:
         self.update_available_cells({"right":1, "left":1, "forward":1})  # Initial available moves
         
         # Key bindings
-        self.root.bind('f', lambda e: self.manual_move("forward"))
-        self.root.bind('l', lambda e: self.manual_move("left"))
-        self.root.bind('r', lambda e: self.manual_move("right"))
-        self.root.bind('b', lambda e: self.manual_move("backward"))
+        self.root.bind('w', lambda e: self.manual_move("forward"))
+        self.root.bind('a', lambda e: self.manual_move("left"))
+        self.root.bind('d', lambda e: self.manual_move("right"))
+        self.root.bind('s', lambda e: self.manual_move("backward"))
+        self.root.bind('b', lambda e: self.manual_move("rotate_back")) 
         
-        # File monitoring
-        self.file_path = '/home/vivi/Desktop/LegoRobotOutputFile/outputFile.txt'
-        self.auto_path = '/home/vivi/Desktop/LegoRobotOutputFile/autoFile.txt'
-        self.last_mod_time = 0
-        self.auto_last_mod_time = 0
-        self.auto_instructions = []
-        self.current_auto_index = 0
-        self.auto_running = False
-        self.auto_delay = 1000  # Delay between auto moves in ms
+        # Data streaming setup
+        self.data_queue = queue.Queue()
+        self.start_data_stream()
         
-        # Initialize file monitoring variables BEFORE calling watch_file()
-        self.last_processed_content = ""  # Track last processed file content
-        self.processing_lock = False      # Prevent recursive processing
-        self.file_check_delay = 500       # Milliseconds between file checks
-        
-        self.set_mode()
+        self.auto_running = True if start_mode == "Auto Mode" else False
+
+        # Initial drawing
         self.draw_grid()
-        self.watch_file()  # Now this is safe to call
+
+    def start_data_stream(self):
+        """Start the thread to read data from the pipe"""
+        print("[DEBUG] Starting data stream thread")
+        self.reader_thread = threading.Thread(
+            target=read_pipe_forever,
+            args=(self.data_queue,),
+            daemon=True
+        )
+        self.reader_thread.start()
+        print("[DEBUG] Started reader thread, beginning queue processing")
+        self.root.after(100, self.process_queue)
+
+    def process_queue(self):
+        """Process messages from the queue"""
+        try:
+            while not self.data_queue.empty():
+                line = self.data_queue.get_nowait()
+                print(f"[DEBUG] Raw data received: {line}")
+                
+                if line == 'x':
+                    self.on_close()
+                    return
+                
+                try:
+                    # Skip non-JSON status messages
+                    if line.startswith(('Started', 'Writing', 'Done', 'Test', 'Reset', 'Intersection')):
+                        print(f"[DEBUG] Skipping status message: {line}")
+                        continue
+                        
+                    data = json.loads(line)
+                    print(f"[DEBUG] Parsed JSON data: {data}")
+                    self.process_sensor_data(data)
+                except json.JSONDecodeError as e:
+                    print(f"[ERROR] Failed to parse JSON from: {line}\nError: {e}")
+                except Exception as e:
+                    print(f"[ERROR] Processing error: {str(e)}")
+        
+        except queue.Empty:
+            pass
+        
+        if not stop_event.is_set():
+            self.root.after(100, self.process_queue)
 
     def set_mode(self):
         """Enable/disable manual controls based on mode"""
@@ -185,7 +222,7 @@ class LabyrinthGridVisualizer:
             for btn in [self.btn_forward, self.btn_left, self.btn_right, self.btn_backward]:
                 btn.configure(state=tk.DISABLED)
             self.auto_running = True
-            self.process_auto_file()
+
 
     def get_direction_string(self):
         """Get string representation of current direction"""
@@ -221,6 +258,10 @@ class LabyrinthGridVisualizer:
         self.btn_backward = ttk.Button(self.manual_frame, text="Backward (B)", 
                                      command=lambda: self.manual_move("backward"))
         self.btn_backward.pack(pady=2, fill=tk.X)
+
+        self.btn_rotate_back = ttk.Button(self.manual_frame, text="Rotate Back (B)", 
+                                        command=lambda: self.manual_move("rotate_back"))
+        self.btn_rotate_back.pack(pady=2, fill=tk.X)
         
         # Position info
         self.info_frame = ttk.LabelFrame(self.right_frame, text="Position Information")
@@ -249,115 +290,58 @@ class LabyrinthGridVisualizer:
         tk.Canvas(frame, width=20, height=20, bg=color, bd=1, relief="solid").pack(side=tk.LEFT, padx=5)
         ttk.Label(frame, text=text).pack(side=tk.LEFT, anchor='w')
     
-    def set_mode(self):
-        """Enable/disable manual controls based on mode"""
-        if self.mode_var.get() == "Manual Mode":
-            for btn in [self.btn_forward, self.btn_left, self.btn_right, self.btn_backward]:
-                btn.configure(state=tk.NORMAL)
-        else:
-            for btn in [self.btn_forward, self.btn_left, self.btn_right, self.btn_backward]:
-                btn.configure(state=tk.DISABLED)
-    
-    def watch_file(self):
-        """Monitor output files for changes with cooldown"""
-        if self.processing_lock:
-            self.root.after(self.file_check_delay, self.watch_file)
-            return
-            
-        try:
-            # Check sensor file
-            if os.path.exists(self.file_path):
-                with open(self.file_path, 'r') as f:
-                    current_content = f.read().strip()
-                    
-                    if current_content != self.last_processed_content:
-                        self.last_processed_content = current_content
-                        self.processing_lock = True
-                        self.process_sensor_file()
-                        self.processing_lock = False
-            
-            # Check auto file in auto mode
-            if self.mode_var.get() == "Auto Mode" and os.path.exists(self.auto_path):
-                with open(self.auto_path, 'r') as f:
-                    current_content = f.read().strip()
-                    
-                    if current_content != self.last_processed_content:
-                        self.last_processed_content = current_content
-                        self.processing_lock = True
-                        self.process_auto_file()
-                        self.processing_lock = False
+    def process_sensor_data(self, data):
+        """Process sensor data from the pipe"""
+        print(f"Processing data: {data}")
         
-        except Exception as e:
-            print(f"Error checking file: {e}")
-            self.processing_lock = False
+        # Extract information from data
+        node_id = data.get("node_id", "")
+        possible_ways = data.get("possible_ways", {})
+        distance = data.get("distance", "30.000000")
+        current_direction = data.get("current_direction", "0")
         
-        self.root.after(self.file_check_delay, self.watch_file)
-
-    def process_sensor_file(self):
-        """Process the sensor data file with movement cooldown"""
-        try:
-            if not self.last_processed_content:
-                return
-                
-            print(f"Processing file content: {self.last_processed_content[:50]}...")  # Truncate for display
-            
-            data = json.loads(self.last_processed_content)
-            print(f"Parsed data: {data}")
-            
-            # Extract movement information
-            node_id = data.get("node_id", "")
-            possible_ways = data.get("possible_ways", {})
-            distance = data.get("distance", "30.000000")  # Default to 30cm if not provided
-            self.last_distance = distance  # Store distance for movement calculation
-            
-            # Update available moves
-            self.update_available_cells(possible_ways)
-            
-            # Check if this is a new node (not the same as last processed)
-            if not hasattr(self, 'last_node_id') or node_id != self.last_node_id:
-                # Split node ID to get movement sequence
-                parts = node_id.split('_')
-                if len(parts) > 1:
-                    movements = parts[1]
-                    
-                    # If we have previous node ID, compare to find the new movement
-                    if hasattr(self, 'last_node_id'):
-                        last_parts = self.last_node_id.split('_')
-                        if len(last_parts) > 1:
-                            last_movements = last_parts[1]
-                            # Find what was added since last time
-                            if movements.startswith(last_movements):
-                                new_movement = movements[len(last_movements):]
-                                if new_movement:
-                                    # Only process the newest movement
-                                    if new_movement[-1] == 'F':
-                                        self.perform_move("forward")
-                                    elif new_movement[-1] == 'L':
-                                        self.perform_move("left")
-                                    elif new_movement[-1] == 'R':
-                                        self.perform_move("right")
-                    else:
-                        # Initial movement (from root)
-                        if movements[-1] == 'F':
-                            self.perform_move("forward")
-                        elif movements[-1] == 'L':
-                            self.perform_move("left")
-                        elif movements[-1] == 'R':
-                            self.perform_move("right")
-                    
+        # Update robot direction if provided
+        if current_direction:
+            try:
+                self.robot_direction = int(current_direction) % 4
+            except ValueError:
+                pass
+        
+        self.last_distance = distance
+        
+        # Update available moves
+        self.update_available_cells(possible_ways)
+        
+        # Only process movement if in Auto Mode
+        if self.mode_var.get() == "Auto Mode" and node_id:
+            # Movement logic for your specific node format
+            if node_id == "Rt_":
+                # Root node - no movement yet
                 self.last_node_id = node_id
+            elif node_id.startswith("Rt_"):
+                # Extract movement sequence
+                moves = node_id[3:]  # Get everything after "Rt_"
                 
-            # Update UI
-            self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
-            self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
-            available_text = ", ".join([f"{k}:{v}" for k, v in possible_ways.items()])
-            self.available_label.config(text=f"Available: {available_text}")
-            self.draw_grid()
-            
-        except json.JSONDecodeError as e:
-            print(f"JSON decode error: {e}")
-        except Exception as e:
-            print(f"Error processing sensor file: {e}")
+                # Only process if we have new movements
+                if hasattr(self, 'last_node_id'):
+                    last_moves = self.last_node_id[3:] if self.last_node_id.startswith("Rt_") else ""
+                    if len(moves) > len(last_moves):
+                        new_move = moves[-1]  # Get the last move
+                        if new_move == 'F':
+                            self.perform_move("forward")
+                        elif new_move == 'L':
+                            self.perform_move("left")
+                        elif new_move == 'R':
+                            self.perform_move("right")
+                
+                self.last_node_id = node_id
+        
+        # Update UI
+        self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
+        self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+        available_text = ", ".join([f"{k}:{v}" for k, v in possible_ways.items()])
+        self.available_label.config(text=f"Available: {available_text}")
+        self.draw_grid()
 
     def perform_move(self, direction):
         print(f"Attempting move: {direction}")
@@ -412,89 +396,50 @@ class LabyrinthGridVisualizer:
                     return False
                     
             elif direction == "left":
-                # First change direction (counter-clockwise)
+                # Rotate left (counter-clockwise), no movement
                 self.robot_direction = (self.robot_direction - 1) % 4
-                
-                # Then move forward in the new direction
-                if self.robot_direction == 0:    # Up
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x, self.robot_y - i, 1)
-                    new_y -= cells_to_move
-                elif self.robot_direction == 1:  # Right
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x + i, self.robot_y, 1)
-                    new_x += cells_to_move
-                elif self.robot_direction == 2:  # Down
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x, self.robot_y + i, 1)
-                    new_y += cells_to_move
-                elif self.robot_direction == 3:  # Left
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x - i, self.robot_y, 1)
-                    new_x -= cells_to_move
-                    
-                if 0 <= new_x < self.grid_cells and 0 <= new_y < self.grid_cells:
-                    self.robot_x, self.robot_y = new_x, new_y
-                else:
-                    print("Cannot move - out of bounds")
-                    return False
+                print(f"Rotated left. New direction: {self.get_direction_string()}")
+                self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+                self.draw_grid()
+                return True
                     
             elif direction == "right":
-                # First change direction (clockwise)
+                # Rotate right (clockwise), no movement
                 self.robot_direction = (self.robot_direction + 1) % 4
+                print(f"Rotated right. New direction: {self.get_direction_string()}")
+                self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+                self.draw_grid()
+                return True
                 
-                # Then move forward in the new direction
-                if self.robot_direction == 0:    # Up
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x, self.robot_y - i, 1)
-                    new_y -= cells_to_move
-                elif self.robot_direction == 1:  # Right
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x + i, self.robot_y, 1)
-                    new_x += cells_to_move
-                elif self.robot_direction == 2:  # Down
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x, self.robot_y + i, 1)
-                    new_y += cells_to_move
-                elif self.robot_direction == 3:  # Left
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x - i, self.robot_y, 1)
-                    new_x -= cells_to_move
-                    
-                if 0 <= new_x < self.grid_cells and 0 <= new_y < self.grid_cells:
-                    self.robot_x, self.robot_y = new_x, new_y
-                else:
-                    print("Cannot move - out of bounds")
-                    return False
+            elif direction == "rotate_back":
+                # Just rotate 180 degrees, do not move
+                self.robot_direction = (self.robot_direction + 2) % 4
+                print(f"Rotated 180 degrees. New direction: {self.get_direction_string()}")
+                self.direction_label.config(text=f"Direction: {self.get_direction_string()}")
+                self.draw_grid()
+                return True
                     
             elif direction == "backward":
-                # First turn 180 degrees
-                self.robot_direction = (self.robot_direction + 2) % 4
-                
-                # Then move forward in the new direction
-                if self.robot_direction == 0:    # Up
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x, self.robot_y - i, 1)
-                    new_y -= cells_to_move
-                elif self.robot_direction == 1:  # Right
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x + i, self.robot_y, 1)
-                    new_x += cells_to_move
-                elif self.robot_direction == 2:  # Down
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x, self.robot_y + i, 1)
-                    new_y += cells_to_move
-                elif self.robot_direction == 3:  # Left
-                    for i in range(1, cells_to_move + 1):
-                        self.mark_position(self.robot_x - i, self.robot_y, 1)
-                    new_x -= cells_to_move
-                    
+                # Move back to the previous cell, without rotating
+                if self.robot_direction == 0:    # Up, so go down
+                    new_x, new_y = self.robot_x, self.robot_y + 1
+                elif self.robot_direction == 1:  # Right, so go left
+                    new_x, new_y = self.robot_x - 1, self.robot_y
+                elif self.robot_direction == 2:  # Down, so go up
+                    new_x, new_y = self.robot_x, self.robot_y - 1
+                elif self.robot_direction == 3:  # Left, so go right
+                    new_x, new_y = self.robot_x + 1, self.robot_y
+
                 if 0 <= new_x < self.grid_cells and 0 <= new_y < self.grid_cells:
+                    self.mark_position(self.robot_x, self.robot_y, 1)  # mark current as visited
                     self.robot_x, self.robot_y = new_x, new_y
+                    self.mark_position(self.robot_x, self.robot_y, 3)  # mark new as current
+                    print(f"Moved backward to ({self.robot_x}, {self.robot_y})")
+                    return True
                 else:
-                    print("Cannot move - out of bounds")
+                    print("Cannot move backward - out of bounds")
                     return False
-            
+                        
             # Mark new position as current (blue)
             self.mark_position(self.robot_x, self.robot_y, 3)
             
@@ -559,37 +504,37 @@ class LabyrinthGridVisualizer:
         self.available_label.config(text=f"Available: {available_text}")
         self.draw_grid()
 
-
-    def execute_next_auto_move(self):
-        """Execute the next move in auto mode with better movement validation"""
-        if not self.auto_running or self.current_auto_index >= len(self.auto_instructions):
-            return
-        
-        instruction = self.auto_instructions[self.current_auto_index]
-        self.current_auto_index += 1
-        
-        # Map instruction to movement
-        move_map = {
-            'f': 'forward',
-            'l': 'left',
-            'r': 'right',
-            'b': 'backward'
-        }
-        
-        direction = move_map.get(instruction, None)
-        if direction:
-            success = self.perform_move(direction)
-            print(f"Auto move {direction} {'succeeded' if success else 'failed'}")
-        
-        # Schedule next move if there are more instructions
-        if self.current_auto_index < len(self.auto_instructions):
-            self.root.after(self.auto_delay, self.execute_next_auto_move)
+    def send_manual_command(self, char):
+        fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
+        ssh_command = [
+            "ssh",
+            "root@172.16.16.111",
+            f"echo '{char}' > {fifo_path}"
+        ]
+        try:
+            result = subprocess.run(ssh_command, check=True, capture_output=True, text=True)
+            print(f"[DEBUG] Sent manual command: '{char}'")
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to send command. Error: {e.stderr}")
+        except Exception as e:
+            print(f"[ERROR] Unexpected error: {str(e)}")
 
     def manual_move(self, direction):
         """Handle manual movement commands"""
         if self.mode_var.get() != "Manual Mode":
             return
-        
+
+        # Send single-character command to backend
+        char_map = {
+            "forward": "w",
+            "left": "a",
+            "right": "d",
+            "backward": "s",
+            "rotate_back": "b"  
+        }
+        if direction in char_map:
+            self.send_manual_command(char_map[direction])
+
         if self.perform_move(direction):
             # Update UI only if move was successful
             self.position_label.config(text=f"Position: ({self.robot_x}, {self.robot_y})")
@@ -597,6 +542,7 @@ class LabyrinthGridVisualizer:
             self.draw_grid()
         else:
             messagebox.showwarning("Invalid Move", f"Cannot {direction} - path not available")
+
     
     def get_forward_position(self):
         """Calculate forward position based on current direction"""
@@ -697,6 +643,17 @@ class LabyrinthGridVisualizer:
                             fill="white", outline="black"
                         )
 
+    def on_close(self):
+        """Clean up when closing the application"""
+        print("Closing application...")
+        stop_event.set()
+        write_x()  # Send termination signal to robot
+        self.reader_thread.join(timeout=1.0)
+        if self.reader_thread.is_alive():
+            print("Warning: Reader thread did not exit cleanly")
+        self.root.quit()
+        self.root.destroy()
+
 def main():
     # First show the startup dialog
     startup_root = tk.Tk()
@@ -718,7 +675,30 @@ def main():
     # Then show the main window with these settings
     main_root = tk.Tk()
     main_root.geometry("800x600")
+
+    def send_initial_command(mode):
+        fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
+        command_char = 'a' if mode == "Auto Mode" else 'm'
+        ssh_command = [
+            "ssh",
+            "root@172.16.16.111",
+            f"echo '{command_char}' > {fifo_path}"
+        ]
+        try:
+            result = subprocess.run(ssh_command, check=True, capture_output=True, text=True)
+            print(f"Successfully sent '{command_char}' start command to backend")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to send start command. Error: {e.stderr}")
+        except Exception as e:
+            print(f"Unexpected error: {str(e)}")
+    
+    send_initial_command(start_mode)
+
+
+    
+    # Create and run visualizer
     app = LabyrinthGridVisualizer(main_root, start_x, start_y, start_direction, start_mode)
+    main_root.protocol("WM_DELETE_WINDOW", app.on_close)
     main_root.mainloop()
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import json
+
 import tkinter as tk
 from tkinter import ttk
 import queue
@@ -100,6 +101,7 @@ class LabyrinthVisualizer:
                     return
                 
                 try:
+                    print(f"[DEBUG] Attempting to parse: {repr(line)}")
                     data = json.loads(line)
                     print(f"[DEBUG] Parsed JSON: {data}")
                     self.process_data(data)
@@ -119,12 +121,26 @@ class LabyrinthVisualizer:
     def process_data(self, data):
         print(f"[DEBUG] Processing node data: {data}")
         
-        if "node_id" in data:
-            node_id = data["node_id"]
+        node_id = data.get("node_id")
+        if node_id:
             self.node_label.config(text=f"Current Node: {node_id}")
+            self.current_node = node_id
+
+            parent_id = node_id[:-1] if node_id != "Rt_" else None
+            if parent_id == "Rt" and node_id.startswith("Rt_"):
+                parent_id = "Rt_"
+
+            if node_id not in self.nodes:
+                self.nodes[node_id] = {"parent": parent_id}
+
+            # Only add edge and redraw if this is a new edge
+            if parent_id and (parent_id, node_id) not in self.edges:
+                self.edges.append((parent_id, node_id))
+                self.draw_tree()
+
         else:
             self.node_label.config(text="Node: unknown")
-        
+
         if "current_direction" in data:
             self.directions_label.config(text=f"Current Direction: {data['current_direction']}")
 
@@ -133,19 +149,8 @@ class LabyrinthVisualizer:
         else:
             self.distance_label.config(text="Distance: -")
 
-        if "node_id" in data:
-            node_id = data["node_id"]
-            if node_id not in self.nodes:
-                parent_id = node_id[:-1] if node_id != "Rt_" else None
-                if parent_id == "Rt" and node_id.startswith("Rt_"):
-                    parent_id = "Rt_"
-                self.nodes[node_id] = {"parent": parent_id}
-                if parent_id:
-                    self.edges.append((parent_id, node_id))
+        self.root.update_idletasks()
 
-            self.current_node = node_id
-            self.draw_tree()
-            self.root.update_idletasks()
 
     def zoom_handler(self, event):
         """Handle mouse wheel zooming"""
@@ -173,6 +178,9 @@ class LabyrinthVisualizer:
             self.root.after(100, self.draw_tree)
             return
         
+        print(f"[DEBUG] All nodes: {list(self.nodes.keys())}")
+        print(f"[DEBUG] All edges: {self.edges}")
+
         """Draw the tree visualization"""
         self.canvas.delete("all")
         if not self.nodes:
@@ -259,9 +267,12 @@ class LabyrinthVisualizer:
 
     def on_close(self):
         print("[INFO] Closing application...")
+        print("[PIPE DEBUG] Sending 'x' termination signal to backend")
+        write_x()  # Send the termination signal to the backend
+
         print("[PIPE DEBUG] Setting stop_event and closing pipe")
         stop_event.set()
-        
+
         # Give the pipe reader thread a moment to close
         print("[PIPE DEBUG] Waiting for reader thread to finish...")
         self.reader_thread.join(timeout=1.0)
@@ -269,11 +280,11 @@ class LabyrinthVisualizer:
             print("[PIPE WARNING] Reader thread did not exit cleanly")
         else:
             print("[PIPE DEBUG] Reader thread exited successfully")
-        
+
         self.root.quit()
         self.root.destroy()
         print("[PIPE DEBUG] Application fully closed")
-        
+
  
 def main():
     root = tk.Tk()
@@ -291,8 +302,10 @@ def main():
             print("[INFO] Successfully sent 'a' to backend")
         except subprocess.CalledProcessError as e:
             print(f"[ERROR] Failed to send 'a' to backend: {e}")
-            
+                
     send_initial_command()
+
+
 
     app = LabyrinthVisualizer(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
