@@ -5,6 +5,7 @@ from tkinter import ttk
 import queue
 import threading
 import subprocess
+from tkinter import messagebox
 from FileProcessor import read_pipe_forever, write_x, stop_event
 
 class LabyrinthVisualizer:
@@ -75,7 +76,7 @@ class LabyrinthVisualizer:
         self.labyrinth_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         
         # New Part from A to B Button
-        self.part_button = ttk.Button(button_frame, text="Part from A to B",
+        self.part_button = ttk.Button(button_frame, text="Path from A to B",
                                     command=self.show_part_path)
         self.part_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
@@ -392,17 +393,113 @@ class LabyrinthVisualizer:
                 else:
                     self.canvas.create_rectangle(x1, y1, x2, y2, fill="gray", outline="black")
 
-        # Draw path connections with arrows
-        for i in range(len(path)-1):
-            x1, y1, label1 = path[i]
-            x2, y2, label2 = path[i+1]
-            sx = start_x + (x1 - min_x) * cell_size + cell_size//2
-            sy = start_y + (y1 - min_y) * cell_size + cell_size//2
-            ex = start_x + (x2 - min_x) * cell_size + cell_size//2
-            ey = start_y + (y2 - min_y) * cell_size + cell_size//2
-            self.canvas.create_line(sx, sy, ex, ey, fill="blue", width=2, arrow=tk.LAST)
 
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def show_part_path(self):
+        """Send 'y' command and show node selection for path segment"""
+        # First send 'y' to backend to initiate path selection mode
+        fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
+        try:
+            ssh_command = [
+                "ssh",
+                "root@172.16.16.111",
+                f"echo 'y' > {fifo_path}"
+            ]
+            subprocess.run(ssh_command, check=True)
+            print("[INFO] Successfully sent 'y' to backend")
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to send 'y' to backend: {e}")
+            messagebox.showerror("Error", f"Failed to initiate path selection: {e}")
+            return
+
+        # Then proceed with node selection
+        if not self.nodes:
+            messagebox.showwarning("Warning", "No nodes available to select")
+            return
+
+        # Rest of your existing show_part_path code...
+        self.dialog = tk.Toplevel(self.root)
+        self.dialog.title("Select Path Start (Point A)")
+        self.dialog.geometry("400x150")
+        
+        # Get sorted list of node IDs
+        self.node_list = sorted(self.nodes.keys(), key=lambda x: len(x))
+        
+        # Point A selection
+        ttk.Label(self.dialog, text="Select Start Point (A):").pack(pady=(10,0))
+        self.point_a_var = tk.StringVar()
+        point_a_combo = ttk.Combobox(self.dialog, textvariable=self.point_a_var, 
+                                values=self.node_list)
+        point_a_combo.pack(pady=5)
+        point_a_combo.current(0)  # Set default to first node
+        
+        # Submit button for Point A
+        def send_point_a():
+            point_a = self.point_a_var.get()
+            if not point_a:
+                messagebox.showerror("Error", "Please select a start point")
+                return
+                
+            # Send Point A to backend
+            self.send_point_to_backend('path_a', point_a)
+            
+            # Close this dialog and open Point B selection
+            self.dialog.destroy()
+            self.select_point_b(point_a)
+        
+        ttk.Button(self.dialog, text="Submit Point A", 
+                command=send_point_a).pack(pady=10)
+
+    def select_point_b(self, point_a):
+        """Second step - select Point B after Point A is sent"""
+        self.dialog = tk.Toplevel(self.root)
+        self.dialog.title("Select Path End (Point B)")
+        self.dialog.geometry("400x150")
+        
+        # Get remaining nodes (excluding Point A)
+        remaining_nodes = [n for n in self.node_list if n != point_a]
+        
+        # Point B selection
+        ttk.Label(self.dialog, text=f"Select End Point (B) - Start was {point_a}:").pack(pady=(10,0))
+        self.point_b_var = tk.StringVar()
+        point_b_combo = ttk.Combobox(self.dialog, textvariable=self.point_b_var,
+                                values=remaining_nodes)
+        point_b_combo.pack(pady=5)
+        if remaining_nodes:
+            point_b_combo.current(0)
+        
+        # Submit button for Point B
+        def send_point_b():
+            point_b = self.point_b_var.get()
+            if not point_b:
+                messagebox.showerror("Error", "Please select an end point")
+                return
+                
+            # Send Point B to backend
+            self.send_point_to_backend('path_b', point_b)
+            self.dialog.destroy()
+        
+        ttk.Button(self.dialog, text="Submit Point B", 
+                command=send_point_b).pack(pady=10)
+
+    def send_point_to_backend(self, command_type, node_id):
+        """Send a single point command to backend"""
+        fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
+        
+        try:
+            ssh_command = [
+                "ssh",
+                "root@172.16.16.111",
+                f"echo '{command_type} {node_id}' > {fifo_path}"
+            ]
+            subprocess.run(ssh_command, check=True)
+            print(f"[INFO] Successfully sent {command_type}: {node_id}")
+            messagebox.showinfo("Success", f"Sent {command_type} {node_id} to backend")
+            
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to send {command_type}: {e}")
+            messagebox.showerror("Error", f"Failed to send {command_type}: {e}")
  
 def main():
     root = tk.Tk()
