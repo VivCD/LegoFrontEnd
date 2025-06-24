@@ -60,6 +60,24 @@ class LabyrinthVisualizer:
         legend_frame2.pack(fill=tk.X, padx=5, pady=5)
         tk.Canvas(legend_frame2, width=30, height=30, bg="green").pack(side=tk.LEFT, padx=5)
         ttk.Label(legend_frame2, text="Current Node").pack(side=tk.LEFT, anchor='w')
+        
+            # New "After Mapping Commands" Section
+        ttk.Label(self.right_frame, text="After Mapping Commands", 
+                font=('Arial', 10, 'bold')).pack(pady=(20,5), anchor='w')
+        
+        # Button Frame
+        button_frame = ttk.Frame(self.right_frame)
+        button_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Existing Show Labyrinth Button
+        self.labyrinth_button = ttk.Button(button_frame, text="Show Labyrinth", 
+                                        command=self.show_labyrinth)
+        self.labyrinth_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        
+        # New Part from A to B Button
+        self.part_button = ttk.Button(button_frame, text="Part from A to B",
+                                    command=self.show_part_path)
+        self.part_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
         # --- State setup ---
         self.nodes = {}
@@ -285,6 +303,106 @@ class LabyrinthVisualizer:
         self.root.destroy()
         print("[PIPE DEBUG] Application fully closed")
 
+    def show_labyrinth(self):
+        """Switch to labyrinth visualization"""
+        self.draw_labyrinth()
+
+    def draw_labyrinth(self):
+        """Draw a grid showing the robot's complete path from start"""
+        self.canvas.delete("all")
+        if not self.nodes:
+            return
+
+        # Movement directions (N=0, E=1, S=2, W=3)
+        directions = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+        
+        # Starting position and direction
+        x, y = 0, 0
+        current_dir = 2  # Initial direction (South)
+        visited = {(x, y): 'Start'}  # Cells and their labels
+        path = [(x, y, 'Start')]  # Full path history
+        
+        # Process all nodes to build the path
+        for node_id in sorted(self.nodes.keys(), key=lambda x: len(x)):
+            if node_id == "Rt_":
+                continue
+                
+            # Reset to start for each node's path calculation
+            cx, cy = 0, 0
+            dir = current_dir
+            moves = node_id.split('_')[-1]
+            
+            # Execute each movement in sequence
+            for move in moves:
+                if move == 'F':
+                    dx, dy = directions[dir]
+                    cx += dx
+                    cy += dy
+                elif move == 'R':
+                    dir = (dir + 1) % 4  # Turn right first
+                    dx, dy = directions[dir]
+                    cx += dx
+                    cy += dy
+                elif move == 'L':
+                    dir = (dir - 1) % 4  # Turn left first
+                    dx, dy = directions[dir]
+                    cx += dx
+                    cy += dy
+            
+            # Record final position
+            visited[(cx, cy)] = moves
+            path.append((cx, cy, moves))
+
+        # Calculate grid dimensions
+        all_x = [x for x,y in visited.keys()]
+        all_y = [y for x,y in visited.keys()]
+        min_x, max_x = min(all_x), max(all_x)
+        min_y, max_y = min(all_y), max(all_y)
+        
+        # Add padding
+        min_x -= 1
+        max_x += 1
+        min_y -= 1
+        max_y += 1
+
+        # Calculate drawing parameters
+        grid_width = max_x - min_x + 1
+        grid_height = max_y - min_y + 1
+        cell_size = min(
+            self.canvas.winfo_width() // grid_width,
+            self.canvas.winfo_height() // grid_height,
+            40
+        )
+        start_x = (self.canvas.winfo_width() - grid_width * cell_size) // 2
+        start_y = (self.canvas.winfo_height() - grid_height * cell_size) // 2
+
+        # Draw all cells
+        for x in range(min_x, max_x + 1):
+            for y in range(min_y, max_y + 1):
+                x1 = start_x + (x - min_x) * cell_size
+                y1 = start_y + (y - min_y) * cell_size
+                x2 = x1 + cell_size
+                y2 = y1 + cell_size
+                
+                if (x, y) in visited:
+                    label = visited[(x, y)]
+                    color = "red" if label == "Start" else "lightblue"
+                    self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="black")
+                    self.canvas.create_text((x1+x2)//2, (y1+y2)//2, text=label, font=('Arial', 10))
+                else:
+                    self.canvas.create_rectangle(x1, y1, x2, y2, fill="gray", outline="black")
+
+        # Draw path connections with arrows
+        for i in range(len(path)-1):
+            x1, y1, label1 = path[i]
+            x2, y2, label2 = path[i+1]
+            sx = start_x + (x1 - min_x) * cell_size + cell_size//2
+            sy = start_y + (y1 - min_y) * cell_size + cell_size//2
+            ex = start_x + (x2 - min_x) * cell_size + cell_size//2
+            ey = start_y + (y2 - min_y) * cell_size + cell_size//2
+            self.canvas.create_line(sx, sy, ex, ey, fill="blue", width=2, arrow=tk.LAST)
+
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
  
 def main():
     root = tk.Tk()
