@@ -13,14 +13,21 @@ def read_pipe_forever(output_queue: queue.Queue):
     ]
 
     while not stop_event.is_set():
-        with subprocess.Popen(ssh_command, stdout=subprocess.PIPE, text=True) as proc:
-            for line in proc.stdout:
-                line = line.strip()
-                output_queue.put(line)
-                if line == 'x':
-                    stop_event.set()
-                    return
-        time.sleep(1)
+        try:
+            with subprocess.Popen(ssh_command, stdout=subprocess.PIPE, text=True) as proc:
+                for line in proc.stdout:
+                    line = line.strip()
+                    if stop_event.is_set():
+                        proc.terminate()
+                        return
+                    output_queue.put(line)
+                    if line == 'x':
+                        stop_event.set()
+                        return
+        except Exception as e:
+            print(f"[PIPE ERROR] {str(e)}")
+            if not stop_event.is_set():
+                time.sleep(1)
 
 
 

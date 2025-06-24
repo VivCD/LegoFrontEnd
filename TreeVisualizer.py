@@ -123,6 +123,11 @@ class LabyrinthVisualizer:
                     print(f"[DEBUG] Attempting to parse: {repr(line)}")
                     data = json.loads(line)
                     print(f"[DEBUG] Parsed JSON: {data}")
+                    # Check for finished labyrinth message
+                    if data.get("finishedLabyrinth") == "true":
+                        print("[INFO] Received labyrinth completion signal")
+                        self.handle_labyrinth_completion()
+                        continue
                     self.process_data(data)
                 except json.JSONDecodeError:
                     print(f"[INFO] Plain message received: {line}")
@@ -136,6 +141,16 @@ class LabyrinthVisualizer:
 
         if not stop_event.is_set():
             self.root.after(100, self.process_queue)
+
+    def handle_labyrinth_completion(self):
+        """Handle the labyrinth completion signal"""
+        print("[INFO] Labyrinth mapping completed")
+        # Update UI to show completion
+        self.node_label.config(text="Mapping Complete!")
+        # Stop the data stream
+        stop_event.set()
+        # Show completion message
+        messagebox.showinfo("Mapping Complete", "The robot has finished mapping the labyrinth")
 
     def process_data(self, data):
         print(f"[DEBUG] Processing node data: {data}")
@@ -397,7 +412,11 @@ class LabyrinthVisualizer:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def show_part_path(self):
-        """Send 'y' command and show node selection for path segment"""
+        """Show dialog to select both start and end points"""
+        if not self.nodes:
+            messagebox.showwarning("Warning", "No nodes available to select")
+            return
+
         # First send 'y' to backend to initiate path selection mode
         fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
         try:
@@ -413,15 +432,10 @@ class LabyrinthVisualizer:
             messagebox.showerror("Error", f"Failed to initiate path selection: {e}")
             return
 
-        # Then proceed with node selection
-        if not self.nodes:
-            messagebox.showwarning("Warning", "No nodes available to select")
-            return
-
-        # Rest of your existing show_part_path code...
+        # Create selection dialog for both points
         self.dialog = tk.Toplevel(self.root)
-        self.dialog.title("Select Path Start (Point A)")
-        self.dialog.geometry("400x150")
+        self.dialog.title("Select Path Points")
+        self.dialog.geometry("400x200")
         
         # Get sorted list of node IDs
         self.node_list = sorted(self.nodes.keys(), key=lambda x: len(x))
@@ -434,73 +448,44 @@ class LabyrinthVisualizer:
         point_a_combo.pack(pady=5)
         point_a_combo.current(0)  # Set default to first node
         
-        # Submit button for Point A
-        def send_point_a():
-            point_a = self.point_a_var.get()
-            if not point_a:
-                messagebox.showerror("Error", "Please select a start point")
-                return
-                
-            # Send Point A to backend
-            self.send_point_to_backend('path_a', point_a)
-            
-            # Close this dialog and open Point B selection
-            self.dialog.destroy()
-            self.select_point_b(point_a)
-        
-        ttk.Button(self.dialog, text="Submit Point A", 
-                command=send_point_a).pack(pady=10)
-
-    def select_point_b(self, point_a):
-        """Second step - select Point B after Point A is sent"""
-        self.dialog = tk.Toplevel(self.root)
-        self.dialog.title("Select Path End (Point B)")
-        self.dialog.geometry("400x150")
-        
-        # Get remaining nodes (excluding Point A)
-        remaining_nodes = [n for n in self.node_list if n != point_a]
-        
         # Point B selection
-        ttk.Label(self.dialog, text=f"Select End Point (B) - Start was {point_a}:").pack(pady=(10,0))
+        ttk.Label(self.dialog, text="Select End Point (B):").pack(pady=(10,0))
         self.point_b_var = tk.StringVar()
         point_b_combo = ttk.Combobox(self.dialog, textvariable=self.point_b_var,
-                                values=remaining_nodes)
+                                values=self.node_list)
         point_b_combo.pack(pady=5)
-        if remaining_nodes:
-            point_b_combo.current(0)
+        if len(self.node_list) > 1:
+            point_b_combo.current(1)
         
-        # Submit button for Point B
-        def send_point_b():
+        # Submit both points
+        def send_points():
+            point_a = self.point_a_var.get()
             point_b = self.point_b_var.get()
-            if not point_b:
-                messagebox.showerror("Error", "Please select an end point")
+            
+            if not point_a or not point_b:
+                messagebox.showerror("Error", "Please select both points")
+                return
+            if point_a == point_b:
+                messagebox.showerror("Error", "Start and end points must be different")
                 return
                 
-            # Send Point B to backend
-            self.send_point_to_backend('path_b', point_b)
-            self.dialog.destroy()
+            # Send both points to backend in one command
+            try:
+                ssh_command = [
+                    "ssh",
+                    "root@172.16.16.111",
+                    f"echo 'path {point_a} {point_b}' > {fifo_path}"
+                ]
+                subprocess.run(ssh_command, check=True)
+                print(f"[INFO] Successfully sent path from {point_a} to {point_b}")
+                messagebox.showinfo("Success", f"Sent path from {point_a} to {point_b} to backend")
+                self.dialog.destroy()
+            except subprocess.CalledProcessError as e:
+                print(f"[ERROR] Failed to send path points: {e}")
+                messagebox.showerror("Error", f"Failed to send path points: {e}")
         
-        ttk.Button(self.dialog, text="Submit Point B", 
-                command=send_point_b).pack(pady=10)
-
-    def send_point_to_backend(self, command_type, node_id):
-        """Send a single point command to backend"""
-        fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
-        
-        try:
-            ssh_command = [
-                "ssh",
-                "root@172.16.16.111",
-                f"echo '{command_type} {node_id}' > {fifo_path}"
-            ]
-            subprocess.run(ssh_command, check=True)
-            print(f"[INFO] Successfully sent {command_type}: {node_id}")
-            messagebox.showinfo("Success", f"Sent {command_type} {node_id} to backend")
-            
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to send {command_type}: {e}")
-            messagebox.showerror("Error", f"Failed to send {command_type}: {e}")
- 
+        ttk.Button(self.dialog, text="Submit Path", 
+                command=send_points).pack(pady=10)
 def main():
     root = tk.Tk()
     root.geometry("1000x700")
