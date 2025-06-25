@@ -1,5 +1,4 @@
 import json
-
 import tkinter as tk
 from tkinter import ttk
 import queue
@@ -9,32 +8,45 @@ from tkinter import messagebox
 from FileProcessor import read_pipe_forever, write_x, stop_event
 
 class LabyrinthVisualizer:
-    def __init__(self, root):
+    def __init__(self, root, mode='auto'):
         print("[DEBUG] Visualizer starting up")
         self.root = root
         self.root.title("Labyrinth Robot Path Visualizer")
+        self.mode = mode  # 'auto' or 'manual'
+        
+        # Initialize UI based on mode
+        self.setup_ui()
+        
+        # --- State setup ---
+        self.nodes = {}
+        self.edges = []
+        self.current_node = None
+        self.zoom_level = 1.0
+        self.data_queue = queue.Queue()
 
-        # --- UI SETUP (unchanged) ---
-        self.main_frame = ttk.Frame(root)
+        if self.mode == 'auto':
+            self.canvas.bind("<MouseWheel>", self.zoom_handler)
+            self.canvas.bind("<Button-4>", self.zoom_handler)
+            self.canvas.bind("<Button-5>", self.zoom_handler)
+            self.canvas.bind("<Configure>", lambda e: self.canvas.focus_set())
+
+        # Start the data stream
+        self.start_data_stream()
+        self.keep_running = True
+
+    def setup_ui(self):
+        """Setup UI based on current mode"""
+        # Create main containers first
+        self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
         self.left_frame = ttk.Frame(self.main_frame)
         self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.canvas = tk.Canvas(self.left_frame, bg='white')
-        self.hscroll = ttk.Scrollbar(self.left_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
-        self.vscroll = ttk.Scrollbar(self.left_frame, orient=tk.VERTICAL, command=self.canvas.yview)
-        self.canvas.configure(xscrollcommand=self.hscroll.set, yscrollcommand=self.vscroll.set)
-
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-        self.vscroll.grid(row=0, column=1, sticky="ns")
-        self.hscroll.grid(row=1, column=0, sticky="ew")
-        self.left_frame.grid_rowconfigure(0, weight=1)
-        self.left_frame.grid_columnconfigure(0, weight=1)
-
         self.right_frame = ttk.Frame(self.main_frame, width=250)
         self.right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
 
+        # Common UI elements
         ttk.Label(self.right_frame, text="Labyrinth Information", font=('Arial', 12, 'bold')).pack(pady=10, anchor='w')
 
         self.node_frame = ttk.LabelFrame(self.right_frame, text="Current Node")
@@ -52,6 +64,26 @@ class LabyrinthVisualizer:
         self.directions_label = ttk.Label(self.dir_frame, text="None")
         self.directions_label.pack(pady=5, padx=5, anchor='w')
 
+        # Create mode-specific UI
+        if self.mode == 'auto':
+            self.setup_auto_ui()
+        else:
+            self.setup_manual_ui()
+
+    def setup_auto_ui(self):
+        """Setup UI for auto mode"""
+        self.canvas = tk.Canvas(self.left_frame, bg='white')
+        self.hscroll = ttk.Scrollbar(self.left_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        self.vscroll = ttk.Scrollbar(self.left_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=self.hscroll.set, yscrollcommand=self.vscroll.set)
+
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.vscroll.grid(row=0, column=1, sticky="ns")
+        self.hscroll.grid(row=1, column=0, sticky="ew")
+        self.left_frame.grid_rowconfigure(0, weight=1)
+        self.left_frame.grid_columnconfigure(0, weight=1)
+
+        # Legend for auto mode
         ttk.Label(self.right_frame, text="Legend", font=('Arial', 10, 'bold')).pack(pady=(20,5), anchor='w')
         legend_frame = ttk.Frame(self.right_frame)
         legend_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -62,39 +94,123 @@ class LabyrinthVisualizer:
         tk.Canvas(legend_frame2, width=30, height=30, bg="green").pack(side=tk.LEFT, padx=5)
         ttk.Label(legend_frame2, text="Current Node").pack(side=tk.LEFT, anchor='w')
         
-            # New "After Mapping Commands" Section
+        # After Mapping Commands for auto mode
         ttk.Label(self.right_frame, text="After Mapping Commands", 
                 font=('Arial', 10, 'bold')).pack(pady=(20,5), anchor='w')
         
-        # Button Frame
+
         button_frame = ttk.Frame(self.right_frame)
         button_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # Existing Show Labyrinth Button
+
         self.labyrinth_button = ttk.Button(button_frame, text="Show Labyrinth", 
                                         command=self.show_labyrinth)
         self.labyrinth_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         
-        # New Part from A to B Button
+
         self.part_button = ttk.Button(button_frame, text="Path from A to B",
                                     command=self.show_part_path)
         self.part_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
-        # --- State setup ---
-        self.nodes = {}
-        self.edges = []
-        self.current_node = None
-        self.zoom_level = 1.0
-        self.data_queue = queue.Queue()
+    def setup_manual_ui(self):
+        """Setup UI for manual mode"""
+        # Remove canvas if it exists (from previous auto mode)
+        if hasattr(self, 'canvas'):
+            self.canvas.destroy()
+            del self.canvas
+        
+        # Create control buttons
+        control_frame = ttk.Frame(self.left_frame)
+        control_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Movement buttons
+        btn_size = 8
+        btn_style = {'width': btn_size, 'padding': 10}
+        
+        self.btn_forward = ttk.Button(control_frame, text="↑ Forward (W)", 
+                                    command=lambda: self.send_manual_command('W'), **btn_style)
+        self.btn_forward.grid(row=0, column=1, pady=5)
+        
+        self.btn_left = ttk.Button(control_frame, text="← Left (A)", 
+                                command=lambda: self.send_manual_command('A'), **btn_style)
+        self.btn_left.grid(row=1, column=0, padx=5)
+        
+        self.btn_right = ttk.Button(control_frame, text="→ Right (D)", 
+                                command=lambda: self.send_manual_command('D'), **btn_style)
+        self.btn_right.grid(row=1, column=2, padx=5)
+        
+        self.btn_backward = ttk.Button(control_frame, text="↓ Backward (S)", 
+                                    command=lambda: self.send_manual_command('S'), **btn_style)
+        self.btn_backward.grid(row=2, column=1, pady=5)
+        
+        self.btn_rotate_back = ttk.Button(control_frame, text="↻ Rotate Back (B)", 
+                                        command=lambda: self.send_manual_command('B'), 
+                                        style='Special.TButton')
+        self.btn_rotate_back.grid(row=3, column=0, columnspan=3, pady=10, sticky='ew')
 
-        self.canvas.bind("<MouseWheel>", self.zoom_handler)
-        self.canvas.bind("<Button-4>", self.zoom_handler)
-        self.canvas.bind("<Button-5>", self.zoom_handler)
-        self.canvas.bind("<Configure>", lambda e: self.canvas.focus_set())
+        # Configure style for special buttons
+        style = ttk.Style()
+        style.configure('Special.TButton', foreground='white', background='blue', 
+                    font=('Arial', 10, 'bold'))
+        
+        # Make buttons expand evenly
+        for i in range(3):
+            control_frame.columnconfigure(i, weight=1)
+        for i in range(4):
+            control_frame.rowconfigure(i, weight=1)
 
-        # Start the data stream
-        self.start_data_stream()
-        self.keep_running = True
+        # Add Switch to Auto button in the legend section
+        legend_frame = ttk.Frame(self.right_frame)
+        legend_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.switch_auto_btn = ttk.Button(legend_frame, text="Switch to Auto Mode",
+                                        command=self.switch_to_auto,
+                                        style='Switch.TButton')
+        self.switch_auto_btn.pack(fill=tk.X, pady=5)
+        
+        style.configure('Switch.TButton', foreground='white', background='green',
+                    font=('Arial', 10, 'bold'))
+
+    def switch_to_auto(self):
+        """Switch from manual to auto mode"""
+        try:
+            # Send 'a' command to backend
+            fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
+            ssh_command = [
+                "ssh",
+                "root@172.16.16.111",
+                f"echo 'a' > {fifo_path}"
+            ]
+            subprocess.run(ssh_command, check=True, timeout=5)
+            print("[INFO] Sent 'a' command to switch to auto mode")
+            
+            # Clear current UI
+            for widget in self.main_frame.winfo_children():
+                widget.destroy()
+            
+            # Reinitialize as auto mode
+            self.mode = 'auto'
+            self.setup_ui()
+            self.draw_tree()  # Initial draw if needed
+            
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to switch to auto mode: {e}")
+            messagebox.showerror("Error", f"Failed to switch to auto mode: {e}")
+
+    def send_manual_command(self, command):
+        """Send manual movement command to backend"""
+        try:
+            fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
+            ssh_command = [
+                "ssh",
+                "root@172.16.16.111",
+                f"echo '{command}' > {fifo_path}"
+            ]
+            subprocess.run(ssh_command, check=True, timeout=5)
+            print(f"[INFO] Sent manual command: {command}")
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to send manual command: {e}")
+            messagebox.showerror("Error", f"Failed to send command: {e}")
 
     def start_data_stream(self):
         """Start the thread to read data from the pipe"""
@@ -560,30 +676,53 @@ class LabyrinthVisualizer:
             messagebox.showerror("Error", 
                 f"Failed to send path points. Pipe might not exist.\nError: {e}")
             
-def main():
+def show_mode_selection():
+    """Show initial mode selection dialog"""
     root = tk.Tk()
-    root.geometry("1000x700")
-
-    def send_initial_command():
+    root.withdraw()  # Hide the main window
+    
+    # Create mode selection dialog
+    choice = messagebox.askquestion("Mode Selection", 
+                                   "Choose robot operation mode:",
+                                   detail="Yes for Auto mode, No for Manual mode",
+                                   icon='question')
+    
+    mode = 'auto' if choice == 'yes' else 'manual'
+    command = 'a' if choice == 'yes' else 'm'
+    
+    # Send the mode command to backend
+    try:
         fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
         ssh_command = [
             "ssh",
             "root@172.16.16.111",
-            f"echo 'a' > {fifo_path}"
+            f"echo '{command}' > {fifo_path}"
         ]
-        try:
-            subprocess.run(ssh_command, check=True)
-            print("[INFO] Successfully sent 'a' to backend")
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to send 'a' to backend: {e}")
-                
-    send_initial_command()
+        subprocess.run(ssh_command, check=True)
+        print(f"[INFO] Successfully sent '{command}' to backend")
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to send mode command: {e}")
+        messagebox.showerror("Error", f"Failed to initialize mode: {e}")
+        root.destroy()
+        return
+    
+    root.destroy()
+    return mode
 
-
-
-    app = LabyrinthVisualizer(root)
+def main():
+    # Show mode selection first
+    mode = show_mode_selection()
+    if not mode:
+        return  # Exit if mode selection failed
+    
+    # Create main window
+    root = tk.Tk()
+    root.geometry("1000x700")
+    
+    # Create visualizer with selected mode
+    app = LabyrinthVisualizer(root, mode)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
 
 if __name__ == "__main__":
-    main() 
+    main()
