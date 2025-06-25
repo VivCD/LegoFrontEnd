@@ -322,6 +322,22 @@ class LabyrinthVisualizer:
     def show_labyrinth(self):
         """Switch to labyrinth visualization"""
         self.draw_labyrinth()
+        
+        # Add a back button to return to tree view
+        back_button = ttk.Button(self.right_frame, 
+                            text="Back to Tree",
+                            command=self.show_tree_view)
+        back_button.pack(pady=10)
+
+    def show_tree_view(self):
+        """Switch back to tree visualization"""
+        # Clear any existing back button
+        for widget in self.right_frame.winfo_children():
+            if isinstance(widget, ttk.Button) and widget["text"] == "Back to Tree":
+                widget.destroy()
+        
+        # Redraw the tree
+        self.draw_tree()
 
     def draw_labyrinth(self):
         """Draw a grid showing the robot's complete path from start"""
@@ -411,44 +427,70 @@ class LabyrinthVisualizer:
 
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
+
+
     def show_part_path(self):
         """Show dialog to select both start and end points"""
         if not self.nodes:
             messagebox.showwarning("Warning", "No nodes available to select")
             return
 
-        # First send 'y' to backend to initiate path selection mode
-        fifo_path = '/root/LegoRobotOutputFile/frontend_sending_command'
+        # First check if pipes exist
         try:
+            # Check if command pipe exists
+            check_pipe_cmd = [
+                "ssh",
+                "root@172.16.16.111",
+                "[ -p /root/LegoRobotOutputFile/frontend_sending_command ] && echo exists || echo missing"
+            ]
+            result = subprocess.run(check_pipe_cmd, check=True, capture_output=True, text=True, timeout=5)
+            if "missing" in result.stdout:
+                messagebox.showerror("Error", "Command pipe not found on backend")
+                return
+
+            # Check if points pipe exists
+            check_points_pipe = [
+                "ssh",
+                "root@172.16.16.111",
+                "[ -p /root/LegoRobotOutputFile/frontend_sending_a_and_b ] && echo exists || echo missing"
+            ]
+            result = subprocess.run(check_points_pipe, check=True, capture_output=True, text=True, timeout=5)
+            if "missing" in result.stdout:
+                messagebox.showerror("Error", "Points pipe not found on backend")
+                return
+
+            # Send 'y' to backend to initiate path selection mode
             ssh_command = [
                 "ssh",
                 "root@172.16.16.111",
-                f"echo 'y' > {fifo_path}"
+                "echo 'y' > /root/LegoRobotOutputFile/frontend_sending_command"
             ]
-            subprocess.run(ssh_command, check=True)
+            subprocess.run(ssh_command, check=True, timeout=5)
             print("[INFO] Successfully sent 'y' to backend")
+
+        except subprocess.TimeoutExpired:
+            print("[ERROR] Timeout while checking pipes")
+            messagebox.showerror("Error", "Timeout while checking backend pipes")
+            return
         except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to send 'y' to backend: {e}")
-            messagebox.showerror("Error", f"Failed to initiate path selection: {e}")
+            print(f"[ERROR] Failed to check pipes: {e}")
+            messagebox.showerror("Error", f"Failed to check backend pipes: {e}")
             return
 
-        # Create selection dialog for both points
+        # Rest of the method remains the same...
         self.dialog = tk.Toplevel(self.root)
         self.dialog.title("Select Path Points")
-        self.dialog.geometry("400x200")
+        self.dialog.geometry("400x300")
         
-        # Get sorted list of node IDs
         self.node_list = sorted(self.nodes.keys(), key=lambda x: len(x))
         
-        # Point A selection
         ttk.Label(self.dialog, text="Select Start Point (A):").pack(pady=(10,0))
         self.point_a_var = tk.StringVar()
         point_a_combo = ttk.Combobox(self.dialog, textvariable=self.point_a_var, 
                                 values=self.node_list)
         point_a_combo.pack(pady=5)
-        point_a_combo.current(0)  # Set default to first node
+        point_a_combo.current(0)
         
-        # Point B selection
         ttk.Label(self.dialog, text="Select End Point (B):").pack(pady=(10,0))
         self.point_b_var = tk.StringVar()
         point_b_combo = ttk.Combobox(self.dialog, textvariable=self.point_b_var,
@@ -457,35 +499,67 @@ class LabyrinthVisualizer:
         if len(self.node_list) > 1:
             point_b_combo.current(1)
         
-        # Submit both points
-        def send_points():
-            point_a = self.point_a_var.get()
-            point_b = self.point_b_var.get()
+        send_button = ttk.Button(self.dialog, text="Send Points", command=self.send_points)
+        send_button.pack(pady=20)
+        
+
+    def send_points(self):
+        """Send the selected points to the backend"""
+        point_a = self.point_a_var.get()
+        point_b = self.point_b_var.get()
+        
+        if not point_a or not point_b:
+            messagebox.showerror("Error", "Please select both points")
+            return
+        if point_a == point_b:
+            messagebox.showerror("Error", "Start and end points must be different")
+            return
             
-            if not point_a or not point_b:
-                messagebox.showerror("Error", "Please select both points")
-                return
-            if point_a == point_b:
-                messagebox.showerror("Error", "Start and end points must be different")
-                return
-                
-            # Send both points to backend in one command
-            try:
+        try:
+            # Send the points to the readingPipePathAandB pipe
+            a_and_b_pipe = '/root/LegoRobotOutputFile/frontend_sending_a_and_b'
+            command = f"{point_a} {point_b}"
+            
+            ssh_command = [
+                "ssh",
+                "root@172.16.16.111",
+                f"echo '{command}' > {a_and_b_pipe}"
+            ]
+            
+            # Increase timeout to 10 seconds
+            subprocess.run(ssh_command, check=True, timeout=10)
+            print(f"[INFO] Successfully sent path from {point_a} to {point_b}")
+            
+            # Show success message and ask for confirmation
+            confirm = messagebox.askyesno(
+                "Confirmation", 
+                f"Sent path from {point_a} to {point_b} to backend.\n"
+                "Is the robot in the correct starting position?"
+            )
+            
+            if confirm:
+                # Send 'y' command to start the movement
+                cmd_pipe = '/root/LegoRobotOutputFile/frontend_sending_command'
                 ssh_command = [
                     "ssh",
                     "root@172.16.16.111",
-                    f"echo 'path {point_a} {point_b}' > {fifo_path}"
+                    f"echo 'y' > {cmd_pipe}"
                 ]
-                subprocess.run(ssh_command, check=True)
-                print(f"[INFO] Successfully sent path from {point_a} to {point_b}")
-                messagebox.showinfo("Success", f"Sent path from {point_a} to {point_b} to backend")
-                self.dialog.destroy()
-            except subprocess.CalledProcessError as e:
-                print(f"[ERROR] Failed to send path points: {e}")
-                messagebox.showerror("Error", f"Failed to send path points: {e}")
-        
-        ttk.Button(self.dialog, text="Submit Path", 
-                command=send_points).pack(pady=10)
+                subprocess.run(ssh_command, check=True, timeout=5)
+                print("[INFO] Sent 'y' command to start movement")
+                messagebox.showinfo("Success", "Robot movement command sent")
+            
+            self.dialog.destroy()
+            
+        except subprocess.TimeoutExpired:
+            print("[ERROR] Timeout while sending path points")
+            messagebox.showerror("Error", 
+                "Timeout while sending points to backend. Is the backend listening?")
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to send path points: {e}")
+            messagebox.showerror("Error", 
+                f"Failed to send path points. Pipe might not exist.\nError: {e}")
+            
 def main():
     root = tk.Tk()
     root.geometry("1000x700")
